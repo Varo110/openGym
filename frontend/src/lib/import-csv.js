@@ -163,6 +163,13 @@ const ALIAS_EX = {
   'back lunge (barbell)': '0078',
   'incline bench press': '0047', 'decline bench press': '0033',
   'close grip bench press': '0030', 'close-grip bench press': '0030',
+  'goblet squat': '1760', 'dumbbell goblet squat': '1760', 'kettlebell goblet squat': '0534',
+  // Cardio names from common exports are curated rather than inferred from a sparse catalogue.
+  treadmill: '3666', 'treadmill walk': '3666', 'treadmill run': '3666',
+  cycling: '2331', 'cross trainer': '2331', elliptical: '2141',
+  'stationary bike': '2138', 'exercise bike': '2138', 'stepmill': '2311',
+  'pallof press': '0979', 'cable pallof press': '0979', 'vertical pallof press': '1015',
+  'cable core pallof press': '0979', 'core pallof press': '0979',
   squat: '0043', 'back squat': '0043', 'barbell squat': '0043', 'front squat': '0042',
   deadlift: '0032', 'romanian deadlift': '0085', rdl: '0085', 'sumo deadlift': '0117',
   'lat pulldown': '2330', 'lat pull down': '2330', pulldown: '2330',

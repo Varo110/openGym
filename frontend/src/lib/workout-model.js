@@ -7,9 +7,12 @@
 
 export const PHASES = ['warmup', 'work']
 
-/** Canonical warm-up test: an explicit phase wins, legacy boolean falls back. */
+/** Canonical warm-up test: an explicit phase wins; legacy boolean is only a fallback. */
 export function isWarmupRow(set) {
-  return !!(set && (set.phase === 'warmup' || set.warmup === true))
+  if (!set || typeof set !== 'object') return false
+  if (set.phase === 'warmup') return true
+  if (set.phase === 'work') return false
+  return set.warmup === true
 }
 export const MODES = ['reps', 'time', 'cardio']
 export const TARGET_MODES = ['reps', 'time']
