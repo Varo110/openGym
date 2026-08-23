@@ -10,12 +10,13 @@ import { t } from '../lib/i18n.js'
 import { api } from '../lib/api.js'
 import { setProgressHighWater, supersetFlowStep } from '../lib/supersetFlow.js'
 import Media from '../components/Media.jsx'
-import { startFlow, exercisePicker, exConfigSheet, exerciseDetailSheet, topWeightSheet, finishWorkout, workoutCompleteSheet, confirmSheet } from '../sheets.jsx'
+import { startFlow, exercisePicker, exConfigSheet, exerciseDetailSheet, topWeightSheet, finishWorkout, workoutCompleteSheet, confirmSheet, programmeExitSheet } from '../sheets.jsx'
 import Icon from '../components/Icon.jsx'
 import { Button, Check, NumberField } from '../components/ui.jsx'
 import { nextPrescription, applyPrescription } from '../lib/progression.js'
 import { glyphOf } from '../lib/glyphs.js'
 import { isWarmupRow } from '../lib/workout-model.js'
+import { isProgrammeSession } from '../lib/partial.js'
 
 /* ---------- start chooser (no active workout) ---------- */
 function StartChooser() {
@@ -385,9 +386,23 @@ function ActiveWorkout() {
     }
   }, [])
 
+  const leaveWorkout = () => {
+    if (isProgrammeSession(A)) {
+      programmeExitSheet()
+      return
+    }
+    confirmSheet({
+      title: t('Discard workout?'),
+      message: t('The sets you logged in this session will be lost.'),
+      confirmText: t('Discard'),
+      danger: true,
+      onConfirm: () => { update(s => { s.active = null }); stopRest(); nav('/home') }
+    })
+  }
+
   return <div className="narrow">
     <div className="hdr">
-      <button className="iconbtn" aria-label={t('Discard')} onClick={() => confirmSheet({ title: t('Discard workout?'), message: t('The sets you logged in this session will be lost.'), confirmText: t('Discard'), danger: true, onConfirm: () => { update(s => { s.active = null }); stopRest(); nav('/home') } })}><Icon name="xmark" /></button>
+      <button className="iconbtn" aria-label={t('Discard')} onClick={leaveWorkout}><Icon name="xmark" /></button>
       <div style={{ textAlign: 'center' }}><div style={{ fontWeight: 600 }}>{A.name}</div><div className="sub"><Elapsed start={A.start} /> · {t('{0} sets', done + '/' + total)}</div></div>
       <button className="iconbtn" style={{ color: 'var(--acc)' }} aria-label={t('Finish')} onClick={finishWorkout}><Icon name="check" /></button>
     </div>

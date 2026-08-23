@@ -22,6 +22,9 @@ import { nextPrescription, applyPrescription, policyFor, defaultIncrement, POLIC
 import { MOBILE, shareExport } from './lib/mobile.js'
 import { buildCompletedWorkout } from './lib/finish-workout.js'
 import { isWarmupRow } from './lib/workout-model.js'
+import { classifyWorkoutExit, entriesForProgrammeExit, isProgrammeSession, partialExitBaseline } from './lib/partial.js'
+import { programmeInstanceMarker, projectStateQueue, scheduleWriteContext } from './lib/programmes.js'
+import { completeProgrammeCycleInState } from './lib/programmes-ui.js'
 
 const S = () => useStore.getState().S
 const update = (...a) => useStore.getState().update(...a)
@@ -854,21 +857,69 @@ export function WorkoutRow({ w, onClick }) {
 }
 
 /* ============================ workout lifecycle ============================ */
-export function startFlow(routineId) {
-  bwSheet({ required: true, onDone: bw => beginWorkout(routineId, bw) })
+function programmeStartProjection(state) {
+  try {
+    const now = Date.now()
+    const queue = projectStateQueue(state, { now })
+    const front = queue?.front
+    if (!front || queue.blocked) return null
+    const today = scheduleWriteContext({ now, timeZone: queue.timeZone }).calendarDate
+    const due = front.status === 'owed' || front.status === 'invalid'
+      || (typeof front.projectedDate === 'string' && front.projectedDate <= today)
+    return due ? { queue, front } : null
+  } catch {
+    // An invalid optional programme namespace must not break the classic start flow.
+    return null
+  }
 }
-export function beginWorkout(routineId, bw) {
+
+export function startFlow(routineId, programmeItem = null) {
+  const projection = programmeStartProjection(S())
+  let selectedProgramme = programmeItem
+  let selectedRoutineId = routineId
+  if (!selectedProgramme && projection?.front?.source === 'programme') {
+    selectedProgramme = projection.front
+    selectedRoutineId = projection.front.routineId
+  }
+  bwSheet({ required: true, onDone: bw => beginWorkout(selectedRoutineId, bw, selectedProgramme) })
+  return true
+}
+
+export function beginWorkout(routineId, bw, programmeItem = null) {
   const st = S()
-  const r = routineId ? st.routines.find(x => x.id === routineId) : null
+  const snapshot = programmeItem?.routineSnapshot || programmeItem?.routine
+  const r = snapshot && Array.isArray(snapshot.ex)
+    ? snapshot
+    : routineId ? st.routines.find(x => x.id === routineId) : null
   // The prescription is applied as the session is built, so you walk up to the bar with the
-  // right weight already on the screen instead of being told about it afterwards. `plan` is
-  // kept on the entry purely so the workout can explain the number it chose.
+  // right weight already on the screen instead of being told about it afterwards.
   const entries = (r ? r.ex : []).map(cfg => {
     const plan = nextPrescription(st, cfg, r)
     return { id: cfg.id, sg: cfg.sg, target: { ...cfg }, plan, sets: applyPrescription(buildSets(st, cfg), plan) }
   })
+  const programmeFields = programmeItem ? {
+    sessionType: 'programme',
+    kind: 'programme',
+    programmeSession: true,
+    programmeId: programmeItem.programmeId ?? programmeItem.definitionId ?? null,
+    cycleId: programmeItem.cycleId ?? null,
+    instanceId: programmeItem.instanceId ?? null,
+    sessionId: programmeItem.sessionTemplateId ?? null,
+    programmeStep: {
+      weekIndex: programmeItem.weekIndex ?? null,
+      weekday: programmeItem.weekday ?? null,
+      ordinal: programmeItem.ordinal ?? null,
+      nominalDate: programmeItem.nominalDate ?? null,
+      projectedDate: programmeItem.projectedDate ?? null
+    },
+    locationId: programmeItem.locationId ?? null,
+    partialExitBaseline: partialExitBaseline(entries)
+  } : {}
   update(s => {
-    s.active = { id: uid(), d: todayISO(), start: Date.now(), routineId, name: r ? r.name : t('Freestyle'), bw: bw || null, cur: 0, entries }
+    s.active = {
+      id: uid(), d: todayISO(), start: Date.now(), routineId, name: r ? r.name : t('Freestyle'),
+      bw: bw || null, cur: 0, entries, ...programmeFields
+    }
   })
   useUI.getState().stopRest()
   nav('/workout')
@@ -957,9 +1008,113 @@ function FinishSummary({ w, prs, e1prs = [], close }) {
     <Button variant="primary" onClick={() => { close(); nav('/home') }}>{t('Nice!')}</Button>
   </div>
 }
+const cloneProgramme = value => JSON.parse(JSON.stringify(value))
+
+function programmeProvenance(active) {
+  const keys = ['sessionType', 'kind', 'programmeSession', 'programmeId', 'cycleId', 'instanceId', 'sessionId', 'programmeStep', 'locationId']
+  const provenance = Object.fromEntries(keys.filter(key => active?.[key] != null).map(key => [key, cloneProgramme(active[key])]))
+  const marker = programmeInstanceMarker(active)
+  return marker ? { ...provenance, programmeInstance: cloneProgramme(marker) } : provenance
+}
+
+function programmeEntriesForExit(active, classification) {
+  const source = entriesForProgrammeExit(active)
+  const outcomes = new Map((classification?.entries || []).filter(entry => entry?.id != null).map(entry => [entry.id, entry.progression]))
+  return source.map((entry, index) => {
+    const progression = outcomes.get(entry.id) ?? classification?.entries?.[index]?.progression
+    return { ...cloneProgramme(entry), ...(progression ? { progression } : {}) }
+  })
+}
+
+function persistProgrammeExit(active, intent = 'default') {
+  if (!active || !isProgrammeSession(active)) return false
+  if (intent === 'finish') {
+    doFinishWorkout()
+    return true
+  }
+  const classification = classifyWorkoutExit(active, intent)
+  if (!classification.record) {
+    update(s => { if (s.active?.id === active.id) s.active = null })
+    useUI.getState().stopRest()
+    nav('/home')
+    return true
+  }
+  const endedAt = Date.now()
+  const entries = programmeEntriesForExit(active, classification)
+  const w = {
+    id: active.id,
+    d: active.d,
+    start: active.start,
+    end: endedAt,
+    routineId: active.routineId,
+    name: active.name,
+    bw: active.bw,
+    ...programmeProvenance(active),
+    entries,
+    prs: [],
+    partial: classification.partial === true,
+    complete: classification.complete === true,
+    owed: classification.owed === true,
+    schedule: classification.scheduling,
+    partialVersion: 1,
+    exitIntent: classification.intent,
+    disposition: classification.intent,
+    completion: {
+      completedWorkSets: classification.completedWorkSets,
+      prescribedWorkSets: classification.prescribedWorkSets,
+      prescribedWorkSetsAtStart: classification.prescribedWorkSetsAtStart,
+      ratio: classification.ratio,
+      thresholdMet: classification.thresholdMet,
+      exitIntent: classification.intent,
+      disposition: classification.intent
+    }
+  }
+  w.vol = workoutVolume(w)
+  update(s => {
+    if (s.active?.id !== active.id) return
+    s.workouts.push(w)
+    if (classification.scheduling === 'advance' && active.cycleId) {
+      completeProgrammeCycleInState(s, active.cycleId, { now: endedAt, reason: classification.intent || 'skip' })
+    }
+    s.active = null
+  })
+  useUI.getState().stopRest()
+  nav('/home')
+  return true
+}
+
+function ProgrammeExit({ close }) {
+  const active = S().active
+  const classification = active && isProgrammeSession(active) ? classifyWorkoutExit(active, 'default') : null
+  if (!active || !classification) return null
+  const choose = intent => { close(); persistProgrammeExit(active, intent) }
+  return <div style={{ textAlign: 'center', padding: '8px 0' }}>
+    <h3>{t('Leave programme workout?')}</h3>
+    <div className="muted small" style={{ marginBottom: 14 }}>
+      {classification.completedWorkSets > 0
+        ? t('{0} of {1} work sets completed.', classification.completedWorkSets, classification.prescribedWorkSets)
+        : t('No completed work sets yet.')}
+    </div>
+    <Button variant="primary" onClick={() => choose('continue')}>{t('Continue next time')}</Button>
+    <div style={{ height: 8 }} />
+    <Button variant="ghost" onClick={() => choose('skip')}>{t('Finish and skip')}</Button>
+    <div style={{ height: 8 }} />
+    <Button variant="danger" onClick={() => choose('discard')}>{t('Discard')}</Button>
+  </div>
+}
+
+export const programmeExitSheet = () => ui().openSheet(close => <ProgrammeExit close={close} />, { kind: 'center' })
+
 export function finishWorkout() {
   const A = S().active
   if (!A) return
+  if (isProgrammeSession(A)) {
+    const classification = classifyWorkoutExit(A, 'default')
+    if (classification.outcome !== 'complete') {
+      programmeExitSheet()
+      return
+    }
+  }
   const done = setsDoneActive(A)
   const total = A.entries.reduce((n, e) => n + e.sets.length, 0)
   if (!done) { confirmSheet({ title: t('Nothing logged yet'), message: t('You haven’t checked off any sets. Finish the workout anyway?'), confirmText: t('Finish anyway'), onConfirm: doFinishWorkout }); return }
@@ -970,6 +1125,9 @@ function doFinishWorkout() {
   const st = S()
   const A = st.active
   if (!A) return
+  const programme = isProgrammeSession(A)
+  const classification = programme ? classifyWorkoutExit(A, 'finish') : null
+  const endedAt = Date.now()
   const prs = []
   const e1prs = []
   A.entries.forEach(e => {
@@ -981,10 +1139,31 @@ function doFinishWorkout() {
     if (rec && !prs.includes(e.id)) e1prs.push({ id: e.id, ...rec })
   })
   const w = buildCompletedWorkout(A, {
-    end: Date.now(),
+    end: endedAt,
     prs,
     snapshotFor: e => EXIDX[e.id]?.custom ? exerciseMuscleSnapshot(EXIDX[e.id]) : null,
   })
+  if (programme) {
+    Object.assign(w, programmeProvenance(A), {
+      entries: programmeEntriesForExit(A, classification),
+      complete: true,
+      partial: false,
+      owed: false,
+      schedule: 'advance',
+      partialVersion: 1,
+      exitIntent: 'finish',
+      disposition: 'finish',
+      completion: {
+        completedWorkSets: classification.completedWorkSets,
+        prescribedWorkSets: classification.prescribedWorkSets,
+        prescribedWorkSetsAtStart: classification.prescribedWorkSetsAtStart,
+        ratio: classification.ratio,
+        thresholdMet: classification.thresholdMet,
+        exitIntent: 'finish',
+        disposition: 'finish'
+      }
+    })
+  }
   w.vol = workoutVolume(w)
   update(s => {
     w.entries.forEach(e => {
@@ -992,6 +1171,9 @@ function doFinishWorkout() {
       if (mx > 0) { const cur = s.exWeights[e.id]; if (!cur || mx > cur.w) s.exWeights[e.id] = { w: mx, d: w.d } }
     })
     s.workouts.push(w)
+    if (programme && A.cycleId) {
+      completeProgrammeCycleInState(s, A.cycleId, { now: endedAt, reason: 'finish' })
+    }
     s.active = null
   })
   useUI.getState().stopRest()
