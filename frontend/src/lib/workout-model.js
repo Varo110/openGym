@@ -6,6 +6,11 @@
 // by the workout, progression, history, and statistics layers without mutating the source.
 
 export const PHASES = ['warmup', 'work']
+
+/** Canonical warm-up test: an explicit phase wins, legacy boolean falls back. */
+export function isWarmupRow(set) {
+  return !!(set && (set.phase === 'warmup' || set.warmup === true))
+}
 export const MODES = ['reps', 'time', 'cardio']
 export const TARGET_MODES = ['reps', 'time']
 export const TARGET_KINDS = ['fixed', 'amrap']
@@ -191,7 +196,9 @@ export function historyUnitCompatible(input, expectedUnit = null) {
   if (historyUnitAmbiguous(input)) return false
   const expected = normalizeWeightUnit(expectedUnit)
   const unit = historyUnitFor(input)
-  if (!unit) return false
+  // No provenance at all = legacy record: assume the profile unit so normal
+  // persisted history stays visible. Records WITH unit fields stay fail-closed.
+  if (!unit) return true
   if (!expected) return true
   if (unit === LEGACY_WEIGHT_UNIT) return !hasPositiveWeight(input)
   return unit === expected
@@ -226,6 +233,49 @@ function finite(value) {
 function nonNegative(value, fallback = 0) {
   const n = finite(value)
   return n == null || n < 0 ? fallback : n
+}
+
+function percentageSourceOf(source, raw) {
+  const token = String(raw.source ?? source.source ?? source.percentageSource ?? source.loadSource ?? '').trim().toLowerCase()
+  if (['latest', 'latest-session', 'latest_session'].includes(token)) return 'latest'
+  return 'adaptive'
+}
+
+/** Normalize legacy and canonical load prescriptions at the plan boundary. */
+export function normalizeWeightPrescription(input = {}, fallbackWeight = 0) {
+  const source = objectOf(input)
+  const raw = [source.weightPrescription, source.load, source.prescription]
+    .map(value => objectOf(value))
+    .find(value => Object.keys(value).length > 0) || {}
+  const markerValue = raw.kind ?? raw.type ?? source.loadMode ?? source.loadType
+  const marker = typeof markerValue === 'string' ? markerValue.trim().toLowerCase() : ''
+  const percentValue = raw.percent ?? raw.percentage ?? source.loadPercent ?? source.loadPercentage
+  const currentMarker = marker === 'current_1rm_percentage' || marker === 'current_percentage'
+  const currentPercentValue = raw.currentPercent ?? raw.currentPercentage
+    ?? source.currentPercent ?? source.currentPercentage ?? (currentMarker ? percentValue : null)
+  const hasPrescription = Object.keys(raw).length > 0
+    || source.loadMode != null || source.loadType != null
+    || source.loadPercent != null || source.loadPercentage != null || source.loadFallback != null || source.loadSource != null
+  if (!hasPrescription) return null
+  if (currentMarker) {
+    const currentPercent = finite(currentPercentValue)
+    const fallback = nonNegative(raw.fallbackWeight ?? raw.fallback ?? raw.weight ?? source.loadFallback,
+      nonNegative(source.weight ?? fallbackWeight, 0))
+    return { kind: 'percentage', source: 'adaptive', percent: currentPercent != null && currentPercent > 0
+      ? Math.min(200, Math.max(1, Math.round(currentPercent))) : 50, fallbackWeight: fallback }
+  }
+  const workset = marker === 'workset_percent' || marker === 'workset'
+  if (workset || marker === 'percentage' || marker === 'percent' || percentValue != null) {
+    const percent = finite(percentValue)
+    const fallback = nonNegative(raw.fallbackWeight ?? raw.fallback ?? raw.weight ?? source.loadFallback,
+      nonNegative(source.weight ?? fallbackWeight, 0))
+    return { kind: workset ? 'workset_percent' : 'percentage',
+      ...(workset ? {} : { source: percentageSourceOf(source, raw) }),
+      percent: percent != null && percent > 0 ? Math.min(200, percent) : 50, fallbackWeight: fallback }
+  }
+  const fixedWeight = raw.weight ?? raw.w ?? source.weight ?? fallbackWeight
+  if (marker === 'fixed' || fixedWeight != null) return { kind: 'fixed', weight: nonNegative(fixedWeight, 0) }
+  return null
 }
 
 /** Read a confirmed working-weight cache only when its unit is explicit and current. */
@@ -274,11 +324,6 @@ export function normalizePhase(value, fallback = 'work') {
   if (v === 'warmup' || v === 'warm-up' || v === 'warm_up') return 'warmup'
   if (v === 'work') return 'work'
   return fallback === 'warmup' ? 'warmup' : 'work'
-}
-
-export const isWarmupRow = set => {
-  if (set && set.phase != null && set.phase !== '') return normalizePhase(set.phase, 'work') === 'warmup'
-  return set?.warmup === true
 }
 
 /** Normalize an optional ordered phase selection without turning unknown values into work. */
