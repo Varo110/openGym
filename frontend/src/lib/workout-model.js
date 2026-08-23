@@ -1,9 +1,10 @@
 // Canonical, backwards-compatible workout shapes.
 //
 // This module deliberately does not infer a warm-up from an array position. Legacy records
-// without a phase use the work default; a warm-up is only a warm-up when its phase is explicit.
-// The helpers return plain JSON-safe values so they can be used at import/load boundaries and
-// by the workout, progression, history, and statistics layers without mutating the source.
+// without a phase use the work default; a warm-up is identified by either its explicit phase or
+// the legacy boolean marker. The helpers return plain JSON-safe values so they can be used at
+// import/load boundaries and by the workout, progression, history, and statistics layers without
+// mutating the source.
 
 export const PHASES = ['warmup', 'work']
 
@@ -14,15 +15,69 @@ export function isWarmupRow(set) {
   if (set.phase === 'work') return false
   return set.warmup === true
 }
+
+/** Canonical completed-work boundary: work phase rows never include warm-ups.
+ *  A legacy boolean flag marks the row as a warm-up even when a normalized phase was
+ *  stamped on it, so old records never count as work. (isWarmupRow stays
+ *  phase-authoritative for display/rater semantics.) */
+export function isWorkRow(set) {
+  if (set && set.warmup === true) return false
+  return normalizePhase(set?.phase, 'work') === 'work'
+}
 export const MODES = ['reps', 'time', 'cardio']
 export const TARGET_MODES = ['reps', 'time']
 export const TARGET_KINDS = ['fixed', 'amrap']
+export const AMRAP_ROLES = ['none', 'amrap', 'progression']
 export const WEIGHT_UNITS = ['kg', 'lb']
 export const LEGACY_WEIGHT_UNIT = 'legacy'
 export const UNKNOWN_WEIGHT_UNIT = 'unknown'
 
 const has = (value, key) => value != null && Object.prototype.hasOwnProperty.call(value, key)
 const objectOf = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+
+/** AMRAP roles belong only to supported repetition/timed work rows, never warm-up or cardio. */
+export function isAmrapRoleEligibleSet(entry = {}, setIndex) {
+  const sets = Array.isArray(entry?.sets) ? entry.sets : []
+  const set = sets[setIndex]
+  if (!set || !isWorkRow(set)) return false
+  const mode = modeForSet(set, entry?.target || entry)
+  return mode === 'reps' || mode === 'time'
+}
+
+/** Resolve one eligible work row's explicit role, or the legacy final-row fallback when requested. */
+export function amrapRoleForSet(entry = {}, setIndex, legacyAmrap = false) {
+  const sets = Array.isArray(entry?.sets) ? entry.sets : []
+  const set = sets[setIndex]
+  if (!set || !isAmrapRoleEligibleSet(entry, setIndex)) return null
+  const work = sets.map((row, index) => ({ row, index }))
+    .filter(item => isAmrapRoleEligibleSet(entry, item.index))
+  const explicit = work.some(item => has(item.row, 'amrapRole'))
+  if (explicit) return AMRAP_ROLES.includes(set.amrapRole) ? set.amrapRole : 'none'
+  return legacyAmrap && work.at(-1)?.index === setIndex ? 'progression' : 'none'
+}
+
+/** Canonicalize explicit row roles without inventing metadata for legacy rows. */
+export function normalizeAmrapRolesForSets(input = [], target = {}) {
+  const sets = Array.isArray(input) ? input : []
+  const entry = { target: objectOf(target), sets }
+  const explicit = sets.some((set, index) => isAmrapRoleEligibleSet(entry, index) && has(set, 'amrapRole'))
+  let driverSeen = false
+  return sets.map((set, index) => {
+    const out = { ...objectOf(set) }
+    if (!isAmrapRoleEligibleSet(entry, index)) {
+      delete out.amrapRole
+      return out
+    }
+    if (!explicit) return out
+    let role = AMRAP_ROLES.includes(out.amrapRole) ? out.amrapRole : 'none'
+    if (role === 'progression') {
+      if (driverSeen) role = 'amrap'
+      else driverSeen = true
+    }
+    out.amrapRole = role
+    return out
+  })
+}
 
 const WEIGHT_UNIT_ALIASES = {
   kg: 'kg', kgs: 'kg', kilogram: 'kg', kilograms: 'kg',
@@ -149,7 +204,8 @@ function hasPartialMissingWeightUnit(input) {
 }
 
 const WORK_LOAD_FIELDS = [
-  'w', 'weight', 'resolvedWeight', 'weightPrescription', 'load', 'loadMode', 'loadPercent', 'loadFallback',
+  'w', 'weight', 'resolvedWeight', 'weightPrescription', 'load', 'prescription',
+  'loadMode', 'loadType', 'loadPercent', 'loadPercentage', 'loadFallback', 'loadSource',
   'workW', 'workWeight', 'workResolvedWeight', 'workWeightPrescription', 'workLoad', 'workLoadMode',
   'workLoadPercent', 'workLoadFallback'
 ]
@@ -244,7 +300,7 @@ function percentageSourceOf(source, raw) {
   return 'adaptive'
 }
 
-/** Normalize legacy and canonical load prescriptions at the plan boundary. */
+/** Normalize every supported load-prescription spelling to one canonical shape. */
 export function normalizeWeightPrescription(input = {}, fallbackWeight = 0) {
   const source = objectOf(input)
   const raw = [source.weightPrescription, source.load, source.prescription]
@@ -260,24 +316,41 @@ export function normalizeWeightPrescription(input = {}, fallbackWeight = 0) {
     || source.loadMode != null || source.loadType != null
     || source.loadPercent != null || source.loadPercentage != null || source.loadFallback != null || source.loadSource != null
   if (!hasPrescription) return null
+
   if (currentMarker) {
     const currentPercent = finite(currentPercentValue)
-    const fallback = nonNegative(raw.fallbackWeight ?? raw.fallback ?? raw.weight ?? source.loadFallback,
-      nonNegative(source.weight ?? fallbackWeight, 0))
-    return { kind: 'percentage', source: 'adaptive', percent: currentPercent != null && currentPercent > 0
-      ? Math.min(200, Math.max(1, Math.round(currentPercent))) : 50, fallbackWeight: fallback }
+    const fallback = nonNegative(
+      raw.fallbackWeight ?? raw.fallback ?? raw.weight ?? source.loadFallback,
+      nonNegative(source.weight ?? fallbackWeight, 0)
+    )
+    return {
+      kind: 'percentage',
+      source: 'adaptive',
+      percent: currentPercent != null && currentPercent > 0
+        ? Math.min(200, Math.max(1, Math.round(currentPercent))) : 50,
+      fallbackWeight: fallback
+    }
   }
+
   const workset = marker === 'workset_percent' || marker === 'workset'
   if (workset || marker === 'percentage' || marker === 'percent' || percentValue != null) {
     const percent = finite(percentValue)
-    const fallback = nonNegative(raw.fallbackWeight ?? raw.fallback ?? raw.weight ?? source.loadFallback,
-      nonNegative(source.weight ?? fallbackWeight, 0))
-    return { kind: workset ? 'workset_percent' : 'percentage',
+    const fallback = nonNegative(
+      raw.fallbackWeight ?? raw.fallback ?? raw.weight ?? source.loadFallback,
+      nonNegative(source.weight ?? fallbackWeight, 0)
+    )
+    return {
+      kind: workset ? 'workset_percent' : 'percentage',
       ...(workset ? {} : { source: percentageSourceOf(source, raw) }),
-      percent: percent != null && percent > 0 ? Math.min(200, percent) : 50, fallbackWeight: fallback }
+      percent: percent != null && percent > 0 ? Math.min(200, percent) : 50,
+      fallbackWeight: fallback
+    }
   }
+
   const fixedWeight = raw.weight ?? raw.w ?? source.weight ?? fallbackWeight
-  if (marker === 'fixed' || fixedWeight != null) return { kind: 'fixed', weight: nonNegative(fixedWeight, 0) }
+  if (marker === 'fixed' || fixedWeight != null) {
+    return { kind: 'fixed', weight: nonNegative(fixedWeight, 0) }
+  }
   return null
 }
 
@@ -309,17 +382,7 @@ function optionalCap(value) {
 }
 
 function optionalWeightPrescription(source, fallbackWeight) {
-  const raw = objectOf(source.weightPrescription ?? source.load)
-  const marker = typeof raw.kind === 'string' ? raw.kind.trim().toLowerCase() : ''
-  if (marker === 'percentage' || marker === 'workset_percent' || raw.percent != null) {
-    const percent = finite(raw.percent)
-    if (percent != null && percent > 0) return {
-      kind: marker === 'workset_percent' ? 'workset_percent' : 'percentage', percent: Math.min(200, percent),
-      fallbackWeight: nonNegative(raw.fallbackWeight ?? raw.fallback, fallbackWeight)
-    }
-  }
-  if (raw.kind === 'fixed' && has(raw, 'weight')) return { kind: 'fixed', weight: nonNegative(raw.weight, fallbackWeight) }
-  return null
+  return normalizeWeightPrescription(source, fallbackWeight)
 }
 
 export function normalizePhase(value, fallback = 'work') {
@@ -465,7 +528,7 @@ export function modeForEntry(input, fallback = null) {
   const source = objectOf(input)
   const target = has(source, 'target') ? objectOf(source.target) : source
   const sets = Array.isArray(source.sets) ? source.sets : []
-  const workSets = sets.filter(set => normalizePhase(set?.phase, 'work') === 'work')
+  const workSets = sets.filter(isWorkRow)
   const observedSets = workSets.length ? workSets : sets
   const signalModes = [...new Set(observedSets.map(set => modeForSet(set, target)))]
   const targetMode = inferredTargetModeOf(target)
@@ -496,6 +559,26 @@ export function amrapMinRepsFor(input, fallback = null) {
   const value = valueOf(source, ['amrapMinReps', 'minReps', 'reps', 'targetReps'])
   const n = finite(value ?? fallback)
   return n == null || n < 1 ? null : Math.max(1, Math.round(n))
+}
+
+/**
+ * Resolve the canonical target owned by one logged AMRAP row. A row target is deliberately
+ * separate from `r`/`sec`: those fields become the actual result as soon as the set is logged.
+ * The entry target remains the compatibility fallback for old sessions that predate row targets.
+ */
+export function amrapTargetForSet(entry = {}, setIndex) {
+  const source = objectOf(entry)
+  const set = Array.isArray(source.sets) ? objectOf(source.sets[setIndex]) : {}
+  const explicit = finite(set.amrapTarget)
+  if (explicit != null && explicit > 0) return Math.max(1, Math.round(explicit))
+  const target = objectOf(source.target || source)
+  const mode = modeForSet(set, target)
+  const configured = mode === 'time'
+    ? finite(valueOf(target, ['sec', 'seconds', 'durationSec', 'targetSec', 'minSec']))
+    : amrapMinRepsFor(target)
+  if (configured != null && configured > 0) return Math.max(1, Math.round(configured))
+  const legacyRow = mode === 'time' ? finite(set.sec ?? set.seconds) : finite(set.r ?? set.reps)
+  return legacyRow != null && legacyRow > 0 ? Math.max(1, Math.round(legacyRow)) : 1
 }
 
 export function normalizeTarget(input, defaults = {}) {
@@ -572,6 +655,8 @@ export function normalizeLoggedSet(input, targetInput = {}) {
   const sec = mode === 'time' ? nonNegative(secValue, 0) : null
   const cap = optionalCap(valueOf(source, ['cap']) ?? target.cap)
   const out = { phase, done, w, r, sec, cap }
+  const amrapTarget = finite(source.amrapTarget)
+  if (amrapTarget != null && amrapTarget > 0) out.amrapTarget = Math.max(1, Math.round(amrapTarget))
   const rawSignals = rawResultSignalsOf(source)
   if (rawSignals.length > 1) {
     // Never overwrite an ambiguous imported row with null placeholders and lose what the user
@@ -636,6 +721,7 @@ function normalizedSetForEligibility(set, target) {
 /** A completed, explicitly work-phase set is eligible for progression/stall calculations. */
 export function isProgressionEligible(set, target, expectedUnit = null) {
   if (!historyUnitCompatible(set, expectedUnit)) return false
+  if (!isWorkRow(set)) return false
   const { set: normalized } = normalizedSetForEligibility(set, target)
   return normalized.done && normalized.phase === 'work'
 }
@@ -647,6 +733,7 @@ export function isProgressionEligible(set, target, expectedUnit = null) {
  */
 export function is1RMEligible(set, target, expectedUnit = null) {
   if (!historyUnitCompatible(set, expectedUnit)) return false
+  if (!isWorkRow(set)) return false
   const { set: normalized, target: normalizedTarget, mode, explicitSetMode } = normalizedSetForEligibility(set, target)
   return normalized.done && normalized.phase === 'work' && mode === 'reps'
     && normalizedTarget.mode === 'reps'

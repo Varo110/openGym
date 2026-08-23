@@ -7,6 +7,7 @@ import {
   week1StartDate
 } from './programmes.js'
 import {
+  bestWeightFor,
   bestWeightForEntry,
   isBw,
   lastEntryFor,
@@ -14,33 +15,10 @@ import {
   metricRowsForEntry,
   modeOf
 } from './history.js'
-import { REP_CAP } from './onerm.js'
-// Programme completion only needs to exclude explicitly marked warm-up rows. Keep the
-// ownership boundary local instead of importing the later phase/runtime helper set.
-const isWorkRow = set => {
-  if (!set || set.warmup === true) return false
-  return set.phase == null || String(set.phase).trim().toLowerCase() === 'work'
-}
+import { REP_CAP, percentage1RMForExercise } from './onerm.js'
+import { historyUnitCompatible, isWorkRow } from './workout-model.js'
 import { defaultIncrement, nextPrescription } from './progression.js'
 import { EXIDX } from './exercises.js'
-
-function adaptiveE1RMFor(source, exerciseId) {
-  let best = 0
-  for (const workout of source?.workouts || []) {
-    if (!historyUnitMatches(workout, source?.unit)) continue
-    for (const entry of workout?.entries || []) {
-      if (String(entry?.id) !== String(exerciseId)) continue
-      for (const set of entry?.sets || []) {
-        if (set?.done !== true || set?.warmup === true || (set?.phase != null && set.phase !== 'work')) continue
-        const weight = Number(set?.w)
-        const reps = Number(set?.r)
-        if (!(weight > 0) || !(reps >= 1) || reps > REP_CAP) continue
-        best = Math.max(best, reps === 1 ? weight : weight * (1 + reps / 30))
-      }
-    }
-  }
-  return best > 0 ? Math.round(best * 10) / 10 : 0
-}
 
 export const PROGRAMME_NAMESPACE_VERSION = 1
 
@@ -388,37 +366,15 @@ function lastSetFor(entry) {
   return sets.length ? sets[sets.length - 1] : null
 }
 
-function unitToken(value) {
-  const token = typeof value === 'string' ? value.trim().toLowerCase() : ''
-  if (['kg', 'kilogram', 'kilograms'].includes(token)) return 'kg'
-  if (['lb', 'lbs', 'pound', 'pounds'].includes(token)) return 'lb'
-  return token || null
-}
-
-function historyUnitMatches(workout, expectedUnit) {
-  const expected = unitToken(expectedUnit)
-  if (!expected) return true
-  const actual = unitToken(workout?.unit)
-  return actual != null && actual === expected
-}
-
 function bestRecordedWeight(state, exerciseId) {
-  // A history value is useful for pickup only when its unit is explicit and matches the
-  // profile. Unitless and cross-unit rows stay out of the baseline instead of becoming a
-  // silent kg/lb conversion.
-  let best = 0
-  for (const workout of state?.workouts || []) {
-    if (!historyUnitMatches(workout, state?.unit)) continue
-    for (const entry of workout?.entries || []) {
-      if (String(entry?.id) !== String(exerciseId)) continue
-      for (const set of entry?.sets || []) {
-        if (set?.done !== true || !isWorkRow(set)) continue
-        const value = Number(set?.w)
-        if (Number.isFinite(value) && value > best) best = value
-      }
-    }
-  }
-  return best
+  // bestWeightFor applies the canonical provenance guard. Do not add legacy weighted values back
+  // here: a positive unitless record is not known to be in the profile unit and must not become a
+  // false kg/lb baseline during programme pickup.
+  return Number(bestWeightFor(state, exerciseId)) || 0
+}
+
+function adaptiveE1RMFor(source, exerciseId, now) {
+  return percentage1RMForExercise(source, exerciseId, 'adaptive', { now }) || 0
 }
 
 // The load for a target rep count, derived from the estimated 1RM via the inverse
