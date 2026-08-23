@@ -1177,6 +1177,7 @@ function doFinishWorkout() {
     s.active = null
   })
   useUI.getState().stopRest()
+  useUI.getState().stopWork()
   beep(snd(), 880, 0.15); beep(snd(), 1100, 0.15, 0.18); beep(snd(), 1320, 0.3, 0.36)
   ui().openSheet(close => <FinishSummary w={w} prs={prs} e1prs={e1prs} close={close} />, { kind: 'center', locked: true })
 }

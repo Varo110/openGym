@@ -52,6 +52,7 @@ let timerTick = null
 let workInt = null
 let workTick = null
 let workDone = null
+const MAX_WORK_OVERTIME_SEC = 15 * 60
 
 export const useUI = create((set, get) => ({
   sheets: [],          // { id, render:(close)=>JSX, kind:'sheet'|'center', locked }
@@ -108,11 +109,32 @@ export const useUI = create((set, get) => ({
   addRest(sec) {
     const tm = get().timer
     if (!tm) return
-    const left = tm.left + sec
+    const now = Date.now()
+    const remaining = Math.max(0, Math.round((tm.endsAt - now) / 1000))
+    const left = remaining + sec
     // taking off more than is left means "I'm ready now" — same as skipping, and it keeps a
     // negative duration out of both the progress bar and the server-side push schedule
     if (left <= 0) { get().stopRest(); return }
-    set({ timer: { ...tm, left, total: tm.total + sec, endsAt: tm.endsAt + sec * 1000, done: false } })
+    set({ timer: { ...tm, left, total: tm.total + sec, endsAt: now + left * 1000, done: false } })
+    if (!timerInt) {
+      timerTick = () => {
+        const current = get().timer
+        if (!current || current.done) return
+        const next = Math.max(0, Math.round((current.endsAt - Date.now()) / 1000))
+        if (next <= 0) {
+          const snd = useStore.getState().S.sound
+          beep(snd, 880, 0.15); beep(snd, 880, 0.15, 0.25); beep(snd, 1320, 0.4, 0.5)
+          vibrate([200, 100, 200]); maybeRestNotification(); get().toast(t('Rest over — next set!'))
+          if (timerInt) clearInterval(timerInt); timerInt = null
+          if (timerTick) document.removeEventListener('visibilitychange', timerTick); timerTick = null
+          set({ timer: { ...current, left: 0, done: true } })
+          return
+        }
+        set({ timer: { ...current, left: next } })
+      }
+      timerInt = setInterval(timerTick, 1000)
+      document.addEventListener('visibilitychange', timerTick)
+    }
     pushRestTimer(left)
   },
   stopRest() {
@@ -142,17 +164,26 @@ export const useUI = create((set, get) => ({
       if (!wk) return
       // Keep counting past the planned end so the user can choose whether to log the
       // planned duration or the actual duration including overtime.
-      const left = Math.round((wk.endsAt - Date.now()) / 1000)
+      const rawLeft = Math.round((wk.endsAt - Date.now()) / 1000)
+      const left = Math.max(-MAX_WORK_OVERTIME_SEC, rawLeft)
       if (left === wk.left) return
       const snd = useStore.getState().S.sound
       if (left <= 0 && !wk.done) {
         beep(snd, 880, 0.15); beep(snd, 880, 0.15, 0.25); beep(snd, 1320, 0.4, 0.5)
         vibrate([200, 100, 200])
         set({ work: { ...wk, left, done: true } })
+        if (rawLeft <= -MAX_WORK_OVERTIME_SEC) {
+          if (workInt) clearInterval(workInt); workInt = null
+          if (workTick) document.removeEventListener('visibilitychange', workTick); workTick = null
+        }
         return
       }
       if (left <= 3 && left > 0) beep(snd, 660, 0.1)
       set({ work: { ...wk, left } })
+      if (rawLeft <= -MAX_WORK_OVERTIME_SEC) {
+        if (workInt) clearInterval(workInt); workInt = null
+        if (workTick) document.removeEventListener('visibilitychange', workTick); workTick = null
+      }
     }
     workInt = setInterval(workTick, 1000)
     document.addEventListener('visibilitychange', workTick)

@@ -36,6 +36,7 @@ export default function RestTimer() {
       <div className="acts">
         <Button size="sm" onClick={() => workMore(15)}>+15s</Button>
         <Button size="sm" onClick={logWorkPlanned}>{t('Keep {0}s', work.total)}</Button>
+        <Button size="sm" onClick={stopWork}>{t('Cancel')}</Button>
         <Button size="sm" variant="primary" onClick={logWorkWithExtra}>{work.left < 0 ? t('Log +{0}s', work.total + Math.max(0, -work.left)) : t('Log {0}s', work.total)}</Button>
       </div>
     </div>
