@@ -223,8 +223,12 @@ function ActiveWorkout() {
   const setField = (idx, i, field, v) => mutEntry(idx, e => {
     if (v == null) delete e.sets[i][field]; else e.sets[i][field] = v
     // Changing a weight cascades to the following sets of the same phase, so a
-    // heavier bar carries through the set instead of retyping every row.
+    // heavier bar carries through the set instead of retyping every row. It only
+    // cascades on fixed-weight rows: percentage prescriptions are driven by the
+    // plan and must stay untouched, and completed sets are never rewritten.
     if (field === 'w') {
+      const cfg = e.target || e
+      if (cfg.weightPrescription?.kind === 'percentage') return
       e.sets = cascadeWeight(e.sets, i, v)
     }
   })

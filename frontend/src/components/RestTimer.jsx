@@ -34,6 +34,18 @@ export default function RestTimer() {
       <Button size="sm" variant="primary" icon="check" onClick={finishWorkEarly}>{t('Done')}</Button>
     </div>
   )
+  if (timer?.done) return (
+    <div id="timer" className="rest ready" role="status" aria-live="polite" aria-atomic="true">
+      <div className="head">
+        <div className="t">{t('Ready!')}</div>
+        <div className="bar"><i style={{ width: '100%' }} /></div>
+      </div>
+      <div className="acts">
+        <Button size="sm" icon="plus" onClick={() => addRest(15)}>15s</Button>
+        <Button size="sm" variant="primary" className="skip" onClick={stopRest}>{t('Dismiss')}</Button>
+      </div>
+    </div>
+  )
   // Three controls plus the clock don't fit one line on a phone — at 360px the bar is left
   // with about 30px and stops saying anything. So the rest variant stacks: clock and bar
   // read at a glance, controls get their own row. −15 and +15 sit together in number-line

@@ -1,5 +1,6 @@
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useStore } from '../store/useStore.js'
+import { useUI } from '../store/useUI.js'
 import { effectiveRoutine } from '../lib/history.js'
 import { todayISO } from '../lib/format.js'
 import { t } from '../lib/i18n.js'
@@ -22,8 +23,12 @@ export default function TabBar({ onStart }) {
     }
     nav('/workout')
   }
+  const navigateTab = to => {
+    if (S.active) useUI.getState().stopWorkAndPrep()
+    nav(to)
+  }
   const Tab = ({ k, icon, to, label }) => (
-    <button className={on(k) ? 'on' : ''} onClick={() => nav(to)}>
+    <button className={on(k) ? 'on' : ''} onClick={() => navigateTab(to)}>
       <Icon name={icon} /><span>{label}</span>
     </button>
   )
