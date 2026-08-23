@@ -10,9 +10,85 @@ import { wakeLockSupported } from '../lib/wakelock.js'
 import { t, LANGS, INSTR_LANGS } from '../lib/i18n.js'
 import { DEMO, REPO } from '../lib/demo.js'
 import { MOBILE, shareExport, syncReminder } from '../lib/mobile.js'
-import { loadStarterPlan, confirmSheet, importFromApp } from '../sheets.jsx'
+import { loadStarterPlan, confirmSheet, importFromApp, planImportSheet, mergeCustomExercisesSheet } from '../sheets.jsx'
+import { parsePlan, planErrorMessage } from '../lib/plan-share.js'
+import { REST_PRESETS } from '../lib/workout-runtime.js'
+import { POLICY_NAME } from '../lib/progression.js'
+import { canChangeWeightUnit } from '../lib/workout-model.js'
 import Icon from '../components/Icon.jsx'
 import { Section, Row, SelectRow, Switch, Segmented, Button, TextField } from '../components/ui.jsx'
+
+function programmeSize(bytes) {
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+}
+
+function ProgrammeLibrary({ user, toast }) {
+  const [files, setFiles] = useState([])
+  const [busy, setBusy] = useState(false)
+  const inputRef = useRef(null)
+  const refresh = async () => {
+    if (!user) return
+    try {
+      const res = await fetch('/api/programmes', { credentials: 'same-origin' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status))
+      setFiles(data.programmes || [])
+    } catch (e) { toast(t('Could not load programme library: {0}', e.message)) }
+  }
+  useEffect(() => { refresh() }, [user])
+  const upload = async file => {
+    setBusy(true)
+    try {
+      const isPlan = file.name.toLowerCase().endsWith('.json')
+      const bundle = isPlan ? parsePlan(await file.text()) : null
+      const url = '/api/programmes/upload?filename=' + encodeURIComponent(file.name)
+      const res = await fetch(url, { method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status))
+      toast(t('Programme uploaded'))
+      await refresh()
+      if (bundle) planImportSheet(bundle)
+    } catch (e) { toast(t('Programme upload failed: {0}', planErrorMessage(e))) }
+    finally { setBusy(false) }
+  }
+  const importRemotePlan = async file => {
+    try {
+      const res = await fetch(file.download, { credentials: 'same-origin' })
+      if (!res.ok) throw new Error('HTTP ' + res.status)
+      planImportSheet(parsePlan(await res.text()))
+    } catch (e) { toast(t('Plan import failed: {0}', planErrorMessage(e))) }
+  }
+  const remove = file => confirmSheet({
+    title: t('Delete uploaded programme?'),
+    message: t('This removes the personal copy from the application. Shared source files cannot be deleted here.'),
+    confirmText: t('Delete'), danger: true,
+    onConfirm: async () => {
+      try {
+        const res = await fetch(file.download, { method: 'DELETE', credentials: 'same-origin' })
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status))
+        await refresh(); toast(t('Programme deleted'))
+      } catch (e) { toast(t('Could not delete programme: {0}', e.message)) }
+    }
+  })
+  return <Section title={t('Personal programmes')} footer={t('Private to this application. Documents are not included in the public build or converted into routines automatically.')}>
+    <Row icon="upload" iconTint="var(--acc)" title={busy ? t('Uploading…') : t('Upload programme document')}
+      subtitle={t('PDF, Markdown, text, CSV, or an openGym plan JSON')}
+      accessory="chevron" onClick={() => !busy && inputRef.current?.click()} />
+    <input ref={inputRef} type="file" accept=".pdf,.md,.txt,.csv,.json,application/pdf,application/json,text/plain,text/markdown,text/csv" style={{ display: 'none' }}
+      onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) upload(file) }} />
+    {files.length ? <div className="list" style={{ marginTop: 8 }}>
+      {files.map(file => <div key={file.id} className="item">
+        <div className="grow"><div className="tt">{file.filename}</div><div className="ss">{file.scope === 'personal' ? t('Your upload') : t('Shared source')} · {programmeSize(file.size)}</div></div>
+        {file.filename.toLowerCase().endsWith('.json') && <Button size="sm" icon="download" onClick={() => importRemotePlan(file)} aria-label={t('Import plan')} />}
+        <Button size="sm" icon="external" onClick={() => window.open(file.download, '_blank', 'noopener,noreferrer')} aria-label={t('Open programme')} />
+        {file.scope === 'personal' && <Button size="sm" icon="trash" onClick={() => remove(file)} aria-label={t('Delete')} />}
+      </div>)}
+    </div> : <div className="muted small" style={{ padding: '10px 14px' }}>{t('No programme documents available yet.')}</div>}
+  </Section>
+}
 
 export default function Settings() {
   const nav = useNavigate()
@@ -23,6 +99,13 @@ export default function Settings() {
   const fileRef = useRef(null)
   const importRef = useRef(null)
   const wakeOK = wakeLockSupported()
+  const changeUnit = value => {
+    if (!canChangeWeightUnit(S, value)) {
+      toast(t('Finish the active workout before changing units.'))
+      return
+    }
+    update(s => { s.unit = value })
+  }
 
   const doExport = async () => {
     const json = JSON.stringify(S, null, 2)
@@ -111,15 +194,22 @@ export default function Settings() {
       <Row icon="scale" iconTint="var(--teal)" title={t('Weight unit')}>
         <Segmented className="seg-inline"
           options={[{ value: 'kg', label: 'kg' }, { value: 'lb', label: 'lb' }]}
-          value={S.unit} onChange={v => update(s => { s.unit = v })} />
+          value={S.unit} onChange={changeUnit} />
       </Row>
+      <SelectRow icon="chartLine" iconTint="var(--green)" title={t('Default progression')} sheetTitle={t('Default progression')}
+        value={S.defaultProg || ''} onChange={v => update(s => { s.defaultProg = v || null })}
+        options={[{ value: '', label: t('App default (linear for reps)') },
+          ...['off', 'linear', 'greyskull', 'double'].map(p => ({ value: p, label: t(POLICY_NAME[p]) }))]} />
     </Section>
 
     {/* ---------- during a workout ---------- */}
     <Section title={t('During a workout')} footer={wakeOK ? t('The screen stays on while a workout is running, so you don’t have to unlock your phone between sets.') : null}>
       <SelectRow icon="timer" iconTint="var(--orange)" title={t('Rest timer')}
         value={S.restSec} onChange={v => update(s => { s.restSec = v })}
-        options={[60, 90, 120, 150, 180].map(v => ({ value: v, label: v + 's' }))} />
+        options={REST_PRESETS.map(v => ({ value: v, label: v === 0 ? t('Off') : v + 's' }))} />
+      <SelectRow icon="play" iconTint="var(--blue)" title={t('Timed-set prep')}
+        value={S.prepSec ?? 5} onChange={v => update(s => { s.prepSec = v })}
+        options={[0, 3, 5, 10, 15].map(v => ({ value: v, label: v === 0 ? t('Off') : v + 's' }))} />
       {(wakeOK || !MOBILE) && (
         <Row icon="sun" iconTint="var(--yellow)" title={t('Keep screen awake')}
           subtitle={wakeOK ? null : t('Not supported in this browser.')}>
@@ -129,6 +219,12 @@ export default function Settings() {
       )}
       <Row icon="bell" iconTint="var(--pink)" title={t('Sounds')}>
         <Switch checked={!!S.sound} onChange={v => update(s => { s.sound = v })} />
+      </Row>
+      <Row icon="flag" iconTint="var(--green)" title={t('Show exercise summary')} subtitle={t('When an exercise is done')}>
+        <Switch checked={S.endSummary !== false} onChange={v => update(s => { s.endSummary = v })} />
+      </Row>
+      <Row icon="dumbbell" iconTint="var(--purple)" title={t('Default weight from full sets only')} subtitle={t('Missed reps on the last set do not set the next default')}>
+        <Switch checked={S.fullSetsDefault !== false} onChange={v => update(s => { s.fullSetsDefault = v })} />
       </Row>
       {/* Two names for the same judgement, so the column asks in the scale you already think in.
           The (i) sits before the control — you read it on the way to the choice, not after it. */}
@@ -172,7 +268,11 @@ export default function Settings() {
       </div>
     </Section>
 
-    {/* ---------- data: fill it, bring things over, back it up, wipe it ---------- */}
+    {(S.customEx || []).length > 0 && <Section title={t('Custom exercises')} footer={t('Imported names that did not match the catalogue stay custom until you choose a match.')}>
+      <Row icon="sparkles" iconTint="var(--acc)" title={t('Review custom exercises')}
+        subtitle={t('{0} custom exercises to review', S.customEx.length)} accessory="chevron" onClick={mergeCustomExercisesSheet} />
+    </Section>}
+
     <Section title={t('Data')}>
       <Row icon="sparkles" iconTint="var(--acc)" title={t('Load starter plan (PPL)')} accessory="chevron" onClick={loadStarterPlan} />
       <Row icon="shuffle" iconTint="var(--teal)" title={t('Import from another app')}
@@ -182,6 +282,7 @@ export default function Settings() {
       <Row icon="download" iconTint="var(--blue)" title={t('Export backup (JSON)')} accessory="chevron" onClick={doExport} />
       <Row icon="trash" iconTint="var(--red)" title={t('Reset everything')} danger onClick={() => confirmSheet({ title: t('Reset everything?'), message: t('Deletes your plan, workouts and body weight on this device. This cannot be undone.'), confirmText: t('Delete everything'), danger: true, onConfirm: () => { replaceState(JSON.parse(JSON.stringify(DEF)), true); nav('/home'); toast(t('All data reset')) } })} />
     </Section>
+    {!MOBILE && !DEMO && user && <ProgrammeLibrary user={user} toast={toast} />}
     <input ref={fileRef} type="file" accept=".json,application/json" style={{ display: 'none' }} onChange={doImport} />
     {/* Reset after reading so picking the same file twice still fires onChange. */}
     <input ref={importRef} type="file" accept=".csv,.xml,text/csv,text/xml" style={{ display: 'none' }}
@@ -196,8 +297,7 @@ export default function Settings() {
 
     <div className="dim small" style={{ textAlign: 'center', marginTop: 4, lineHeight: 1.6 }}>
       openGym · {t('free & open source (AGPL v3)')}<br />
-      <a href="https://gitlab.com/DuarteSantos8/opengym" target="_blank" rel="noopener">source code</a> · exercise data: hasaneyldrm/exercises-dataset (MIT)<br />
-      exercise images and animations © <a href="https://gymvisual.com/" target="_blank" rel="noopener">Gym visual</a>
+      <a href="https://github.com/DuarteSantos8/openGym" target="_blank" rel="noopener">source code</a> · exercise data: hasaneyldrm/exercises-dataset (CC)
     </div>
   </div>
 }

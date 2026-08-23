@@ -5,48 +5,129 @@ import { registerCustom } from '../lib/exercises.js'
 import { DEMO, DEMO_SEEDED } from '../lib/demo.js'
 import { guestAllowed } from '../lib/guest.js'
 import { MOBILE, nativeLoad, nativeSave, syncReminder } from '../lib/mobile.js'
+import { useUI } from './useUI.js'
+import { normalizeState } from '../lib/state.js'
+import { normalizeDayPlan } from '../lib/history.js'
+import { reconcileProgrammeCyclesInState } from '../lib/programmes-ui.js'
 
 const KEY = 'gym_state_v1'
 export const DEF = {
-  unit: 'kg', restSec: 90, sound: true, keepAwake: true, lang: 'en',
+  schemaVersion: 3,
+  unit: 'kg', restSec: 90, prepSec: 5, sound: true, keepAwake: true, lang: 'en',
   theme: 'dark', accent: 'lime', body: 'male', targetW: null,
   bodyweight: [], routines: [], week: {}, dayPlan: {},
-  exWeights: {}, workouts: [], active: null, customEx: [], gifSize: 'full',
+  exWeights: {}, workouts: [], active: null, lastFinishedSession: null, lastFinishedUndo: null, customEx: [], exerciseAnnotations: {}, programmes: [], gifSize: 'full',
   // effort: which per-set effort scale is logged — 'none' | 'rir' | 'rpe'. null, not 'none', so
   // that a profile which never chose (loaded state is overlaid on DEF, on every path: local,
   // server pull, backup import) still falls back to the `showRir` boolean this replaced and
   // keeps the column it had. See effortOf.
-  reminder: { on: false, time: '08:00', tz: null }, effort: null
+  reminder: { on: false, time: '08:00', tz: null }, effort: null,
+  // defaultProg: the user's default progression rule from Settings (null = built-in).
+  // endSummary: show the locked summary popup when a workout is finished.
+  defaultProg: null, endSummary: true,
+  // fullSetsDefault: the end-of-exercise default weight only counts sets lifted to the
+  // full target reps/time (missed final sets don't set the default). false = any done set.
+  fullSetsDefault: true
 }
 const clone = o => JSON.parse(JSON.stringify(o))
+
+function withoutRoutineDrafts(state) {
+  const next = clone(state)
+  if (Array.isArray(next.routines)) next.routines = next.routines.filter(routine => !routine?.draft)
+  return next
+}
 
 function loadState() {
   try {
     const raw = localStorage.getItem(KEY)
-    if (raw) return Object.assign(clone(DEF), JSON.parse(raw))
+    if (raw) {
+      const state = normalizeState(normalizeDayPlan(JSON.parse(raw)), DEF)
+      const completed = reconcileProgrammeCyclesInState(state, { now: Date.now(), timeZone: localTZ() })
+      if (completed.length) localStorage.setItem(KEY, JSON.stringify(state))
+      return state
+    }
   } catch (e) { /* ignore */ }
-  return clone(DEF)
+  return normalizeState(DEF, DEF)
+}
+
+function hasStoredState() {
+  try {
+    const state = JSON.parse(localStorage.getItem(KEY))
+    return !!state && typeof state === 'object' && !Array.isArray(state)
+  } catch { return false }
 }
 
 const hasData = st => !!((st.workouts || []).length || (st.routines || []).length || (st.bodyweight || []).length)
+const CONFLICT_BACKUP_KEY = 'gym_sync_conflict_backup_v1'
+
+function syncGenerationOf(state) {
+  const generation = Number(state?.syncGeneration)
+  return Number.isSafeInteger(generation) && generation >= 0 ? generation : 0
+}
+
+function unsyncedWorkoutIds(local, server) {
+  const serverIds = new Set((server.workouts || []).map(workout => workout?.id).filter(Boolean))
+  return (local.workouts || []).map(workout => workout?.id).filter(id => id && !serverIds.has(id))
+}
+
+function saveConflictBackup(local, server) {
+  const serverGeneration = syncGenerationOf(server)
+  try {
+    const existing = JSON.parse(localStorage.getItem(CONFLICT_BACKUP_KEY) || 'null')
+    if (existing?.serverGeneration === serverGeneration) return
+  } catch (e) { /* replace malformed or legacy backup with the current bounded recovery record */ }
+  const missingHistory = unsyncedWorkoutIds(local, server)
+  const newerLocal = (local._ts || 0) > (server._ts || 0)
+  const dirty = localStorage.getItem('gym_dirty') === '1'
+  if (!dirty && !newerLocal && !missingHistory.length) return
+  try {
+    localStorage.setItem(CONFLICT_BACKUP_KEY, JSON.stringify({
+      version: 1,
+      serverGeneration,
+      savedAt: Date.now(),
+      reason: 'server-sync-generation',
+      unsyncedWorkoutIds: missingHistory,
+      state: clone(local),
+    }))
+  } catch (e) { /* local conflict backup is best effort; never block the server-managed recovery */ }
+}
 
 export const useStore = create((set, get) => {
   let pushTm = null
   let saveTm = null
+  let nativeWrite = Promise.resolve()
+
+  // Keep full-state file writes ordered: overlapping Capacitor writes could otherwise let an
+  // older active-workout snapshot finish last and resurrect discarded or stale progress.
+  const nativeSaveOrdered = state => {
+    const snapshot = clone(state)
+    nativeWrite = nativeWrite.then(() => nativeSave(snapshot))
+    return nativeWrite
+  }
 
   // Mobile build: mirror the state into a file in the app's data directory (survives WebView
   // storage eviction) and keep the native reminder schedule in step with the weekly plan.
   const nativePersist = () => {
     clearTimeout(saveTm)
-    saveTm = setTimeout(() => { saveTm = null; nativeSave(get().S); syncReminder(get().S) }, 800)
+    saveTm = setTimeout(() => { saveTm = null; nativeSaveOrdered(get().S); syncReminder(get().S) }, 800)
   }
 
   const persist = (S, push = true) => {
-    S._ts = Date.now()
-    registerCustom(S.customEx)
-    localStorage.setItem(KEY, JSON.stringify(S))
-    set({ S })
-    if (MOBILE) nativePersist()
+    const hadActive = !!get().S.active
+    const next = normalizeDayPlan(normalizeState(S, DEF))
+    reconcileProgrammeCyclesInState(next, { now: Date.now(), timeZone: localTZ() })
+    next._ts = Date.now()
+    registerCustom(next.customEx)
+    localStorage.setItem(KEY, JSON.stringify(next))
+    set({ S: next })
+    if (MOBILE) {
+      if (hadActive || next.active) {
+        clearTimeout(saveTm)
+        saveTm = null
+        nativeSaveOrdered(next)
+        syncReminder(next)
+      } else nativePersist()
+    }
     if (push && get().user) {
       clearTimeout(pushTm)
       pushTm = setTimeout(() => get().pushState(), 1500)
@@ -57,22 +138,25 @@ export const useStore = create((set, get) => {
   // (e.g. setting the reminder time then immediately backgrounding to test it). On mobile the
   // same applies to the file mirror — backgrounding is often the last thing before the OS
   // kills the app.
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState !== 'hidden') return
-    if (MOBILE && saveTm) {
-      clearTimeout(saveTm)
-      saveTm = null
-      nativeSave(get().S)
-    }
-    if (pushTm) {
-      clearTimeout(pushTm)
-      pushTm = null
-      get().pushState()
-    }
-  })
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'hidden') return
+      if (MOBILE && saveTm) {
+        clearTimeout(saveTm)
+        saveTm = null
+        nativeSaveOrdered(get().S)
+      }
+      if (pushTm) {
+        clearTimeout(pushTm)
+        pushTm = null
+        get().pushState()
+      }
+    })
+  }
 
   // Everything a sign-out leaves behind on this device, whichever way it was triggered.
   const clearLocalSession = () => {
+    useUI.getState().stopWork()
     get().setUser(null)
     localStorage.removeItem('gym_guest')
     localStorage.removeItem('gym_dirty')
@@ -85,13 +169,23 @@ export const useStore = create((set, get) => {
     user: (() => { try { return JSON.parse(localStorage.getItem('gym_user')) || null } catch { return null } })(),
     ready: false,
 
+    purgeRoutineDrafts() {
+      const state = get().S
+      if (!Array.isArray(state?.routines) || !state.routines.some(routine => routine?.draft)) return false
+      persist(withoutRoutineDrafts(state), false)
+      return true
+    },
+
     // Mutate a draft of S via producer fn, then persist + schedule sync.
     update(mut, push = true) {
       const S = clone(get().S)
       mut(S)
       persist(S, push)
     },
-    replaceState(S, push = false) { persist(clone(S), push) },
+    replaceState(S, push = false) {
+      useUI.getState().stopWork()
+      persist(withoutRoutineDrafts(S), push)
+    },
 
     isGuest: () => localStorage.getItem('gym_guest') === '1',
     setGuest(v) { if (v) localStorage.setItem('gym_guest', '1'); else localStorage.removeItem('gym_guest'); set({}) },
@@ -123,13 +217,29 @@ export const useStore = create((set, get) => {
         const { state } = await api('/api/data')
         const S = get().S
         const dirty = localStorage.getItem('gym_dirty') === '1'
-        if (state && (!hasData(S) || ((state._ts || 0) >= (S._ts || 0) && !dirty))) {
+        const serverGeneration = syncGenerationOf(state)
+        const localGeneration = syncGenerationOf(S)
+        const generationAhead = serverGeneration > localGeneration
+        const managedGeneration = serverGeneration > 0 || localGeneration > 0
+        const legacyPull = !managedGeneration && (!hasData(S) || ((state?._ts || 0) >= (S._ts || 0) && !dirty))
+        if (state && (generationAhead || legacyPull)) {
+          if (generationAhead) saveConflictBackup(S, state)
           const active = S.active
-          const next = Object.assign(clone(DEF), state)
-          if (active) next.active = active
-          persist(next, false)
-        } else if (hasData(S)) { await get().pushState() }
+          const next = normalizeDayPlan(normalizeState(state, DEF))
+          next.active = active || null
+          const sourceWorkoutId = active?.sourceWorkoutId
+          if (sourceWorkoutId && !next.workouts.some(workout => workout.id === sourceWorkoutId)) {
+            const sourceWorkout = S.workouts.find(workout => workout.id === sourceWorkoutId)
+            if (sourceWorkout) next.workouts.push(clone(sourceWorkout))
+          }
+          persist(withoutRoutineDrafts(next), false)
+          if (generationAhead) localStorage.removeItem('gym_dirty')
+        } else if (hasData(S) && (!managedGeneration || (dirty && serverGeneration === localGeneration))) {
+          get().purgeRoutineDrafts()
+          await get().pushState()
+        }
       } catch (e) { /* offline — keep local */ }
+      get().purgeRoutineDrafts()
     },
 
     async signOut() {
@@ -163,12 +273,14 @@ export const useStore = create((set, get) => {
       if (MOBILE) {
         const saved = await nativeLoad()
         const S = get().S
-        if (saved && (!hasData(S) || (saved._ts || 0) >= (S._ts || 0))) {
-          persist(Object.assign(clone(DEF), saved), false)
-        } else if (hasData(S)) {
-          nativeSave(S)   // first run after an update from a file-less version: seed the mirror
+        const hasLocal = hasStoredState()
+        if (saved && (!hasLocal || (saved._ts || 0) > (S._ts || 0))) {
+          persist(withoutRoutineDrafts(Object.assign(clone(DEF), saved)), false)
+        } else if (hasLocal) {
+          nativeSaveOrdered(withoutRoutineDrafts(S))   // first run after an update from a file-less version: seed the mirror
         }
         get().setGuest(true)
+        get().purgeRoutineDrafts()
         syncReminder(get().S)
         set({ ready: true })
         return
@@ -179,6 +291,7 @@ export const useStore = create((set, get) => {
           localStorage.setItem(DEMO_SEEDED, '1')
           await get().resetDemo()
         }
+        get().purgeRoutineDrafts()
         get().setGuest(true)
         set({ ready: true })
         return
@@ -202,9 +315,10 @@ export const useStore = create((set, get) => {
       } catch (e) {
         if (e.status === 401) get().setUser(null)
       }
+      get().purgeRoutineDrafts()
       set({ ready: true })
     }
   }
 })
 
-export { hasData }
+export { hasData, loadState }

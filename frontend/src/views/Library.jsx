@@ -1,22 +1,23 @@
 import { useState } from 'react'
 import { useStore } from '../store/useStore.js'
-import { EXDB, BODYPARTS, allExercises, equipmentOf } from '../lib/exercises.js'
+import { EXDB, BODYPARTS, allExercises, equipmentOf, matchesExerciseSearch } from '../lib/exercises.js'
 import { bestWeightFor } from '../lib/history.js'
 import { fmtNum } from '../lib/format.js'
 import { t } from '../lib/i18n.js'
 import { Thumb } from '../components/Media.jsx'
 import { exerciseDetailSheet, addToRoutineSheet, customExSheet } from '../sheets.jsx'
 import Icon from '../components/Icon.jsx'
-import { Button } from '../components/ui.jsx'
+import { Button, SelectRow } from '../components/ui.jsx'
+import { MUSCLES, MUSCLE_NAME, matchesMuscleGroups } from '../lib/muscles.js'
 
 export default function Library() {
   const S = useStore(s => s.S)
   const [q, setQ] = useState('')
   const [bp, setBp] = useState('')
+  const [muscle, setMuscle] = useState('')
   const [eq, setEq] = useState('')
   const [shown, setShown] = useState(40)
-  const ql = q.toLowerCase().trim()
-  const base = allExercises(S).filter(e => (!bp || e.bp === bp) && (!ql || e.n.toLowerCase().includes(ql) || e.tg.includes(ql) || e.eq.includes(ql) || (e.desc || '').toLowerCase().includes(ql)))
+  const base = allExercises(S).filter(e => (!bp || e.bp === bp) && matchesMuscleGroups(e, muscle ? [muscle] : []) && matchesExerciseSearch(e, q))
   const eqOpts = equipmentOf(base)
   // Drop the equipment filter if the search narrowed it away, so you never hit a dead end.
   const eqOn = eqOpts.includes(eq) ? eq : ''
@@ -30,6 +31,9 @@ export default function Library() {
       <button className={'chip nocap' + (!bp ? ' on' : '')} onClick={() => { setBp(''); setEq(''); setShown(40) }}>{t('All')}</button>
       {BODYPARTS.map(b => <button key={b} className={'chip' + (bp === b ? ' on' : '')} onClick={() => { setBp(b); setEq(''); setShown(40) }}>{t(b)}</button>)}
     </div>
+    <SelectRow title={t('Muscle group')} sheetTitle={t('Muscle group')} value={muscle}
+      onChange={v => { setMuscle(v); setEq(''); setShown(40) }}
+      options={[{ value: '', label: t('Any muscle group') }, ...MUSCLES.map(m => ({ value: m, label: t(MUSCLE_NAME[m]) }))]} />
     {eqOpts.length > 1 && <div className="chips" style={{ marginBottom: 12 }}>
       <button className={'chip nocap' + (!eqOn ? ' on' : '')} onClick={() => { setEq(''); setShown(40) }}>{t('Any equipment')}</button>
       {eqOpts.map(x => <button key={x} className={'chip' + (eqOn === x ? ' on' : '')} onClick={() => { setEq(x); setShown(40) }}>{t(x)}</button>)}

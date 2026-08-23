@@ -16,6 +16,12 @@
 </head>
 <body>
 <div id="root"></div>
+<!-- TEMPORARY diagnostics (remove after live bug fixed) -->
+<script>
+window.__errs=[];
+window.addEventListener('error',function(e){var m=(e.error&&e.error.stack?e.error.stack.split('\n').slice(0,4).join(' <- '):(e.message||e.type));window.__errs.push(m);try{new Image().src='/__errlog?e='+encodeURIComponent(m)}catch(_){}});
+window.addEventListener('unhandledrejection',function(e){var m=(e.reason&&e.reason.stack?e.reason.stack.split('\n').slice(0,4).join(' <- '):String(e.reason));window.__errs.push(m);try{new Image().src='/__errlog?e='+encodeURIComponent(m)}catch(_){}});
+</script>
 <script type="module" src="/src/main.jsx"></script>
 </body>
 </html>

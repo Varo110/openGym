@@ -1,14 +1,17 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../store/useStore.js'
-import { effectiveRoutine, effectiveRoutineId, streakWeeks, lastBW, setsDoneActive } from '../lib/history.js'
+import { effectiveRoutines, effectiveRoutineIds, completedRoutineIdsForDate, reconcileStartSessionChoice, weeklySessionStatus, streakWeeks, lastBW, setsDoneActive, workoutsForUnit } from '../lib/history.js'
 import { fmtNum, fmtDate, todayISO, isoOf, weekKey, DAYS } from '../lib/format.js'
 import { t, dateLocale } from '../lib/i18n.js'
-import { bwSheet, goalSheet, dayOverrideSheet, calendarSheet, startFlow, loadStarterPlan, bwDeltaColor } from '../sheets.jsx'
+import { bwSheet, beginWorkout, repeatFreestyleSheet, goalSheet, dayOverrideSheet, dayViewSheet, calendarSheet, startFlow, startSessionSheet, resumeWeeklySession, loadStarterPlan, bwDeltaColor } from '../sheets.jsx'
 import LineChart from '../components/LineChart.jsx'
 import Icon from '../components/Icon.jsx'
 import { Button } from '../components/ui.jsx'
 import { glyphOf } from '../lib/glyphs.js'
+import { projectStateQueue, scheduleWriteContext } from '../lib/programmes.js'
+import { programmeColourForItem, programmeLabelForItem, programmeNameForItem } from '../lib/programmes-ui.js'
+import './Home.css'
 
 // Home = what to do now + a quick glance. Deep charts & history live in Stats.
 export default function Home() {
@@ -17,33 +20,122 @@ export default function Home() {
   const user = useStore(s => s.user)
   const [weekOffset, setWeekOffset] = useState(0)
 
-  const today = new Date()
-  const routine = effectiveRoutine(S, todayISO())
-  const todayOvr = S.dayPlan[todayISO()] !== undefined
+  const now = Date.now()
+  const today = new Date(now)
+  const programmeTimeZone = S.programmes?.timeZone
+    || S.programmes?.cycles?.find(cycle => cycle?.timeZone)?.timeZone
+    || S.timeZone
+    || null
+  const todayISOValue = todayISO()
+  const programmeTodayISO = programmeTimeZone
+    ? scheduleWriteContext({ now, timeZone: programmeTimeZone }).calendarDate
+    : todayISOValue
+  const [selectedISO, setSelectedISO] = useState(todayISOValue)
+  const todayPlans = effectiveRoutines(S, selectedISO)
+  const routine = todayPlans[0]
+  const programmeQueue = projectStateQueue(S, { now })
+  const programmeToday = programmeQueue.items
+    .filter(item => item.source === 'programme'
+      && (item.projectedDate === (selectedISO === todayISOValue ? programmeTodayISO : selectedISO)
+        || programmeQueue.dispositions?.[item.instanceId]?.calendarDate === (selectedISO === todayISOValue ? programmeTodayISO : selectedISO)))
+    .map(item => {
+      // Dispositions intentionally remain separate from the calendar projection so a skip does
+      // not mutate the immutable cycle snapshot. Merge the matching disposition at the render
+      // boundary, otherwise the Today row would still advertise a skipped session as Start.
+      const disposition = programmeQueue.dispositions?.[item.instanceId]
+      if (!disposition) return item
+      const status = disposition.disposition === 'skip'
+        ? 'skipped'
+        : disposition.disposition === 'finish' ? 'finished' : item.status
+      return { ...item, status, disposition }
+    })
+  // A persisted skip is a disposition rather than a changed calendar item. Keep its original
+  // routine snapshot available on the queue row so the status remains visible on the scheduled
+  // date even though the queue's next unresolved front has moved on.
+  const programmeStatus = status => status === 'owed'
+    ? t('Continue next time')
+    : status === 'skipped'
+      ? t('Finish and skip')
+      : status === 'incomplete'
+        ? t('Incomplete')
+        : status === 'done' ? t('Done') : null
+  const doneToday = completedRoutineIdsForDate(S, selectedISO)
+  const classicStatuses = todayPlans.map(plan => weeklySessionStatus(S, {
+    source: 'classic', routineId: plan.id, calendarDate: selectedISO
+  }))
+  const classicStatus = classicStatuses.includes('resume')
+    ? 'resume'
+    : classicStatuses.includes('start')
+      ? 'start'
+      : classicStatuses.includes('incomplete') ? 'incomplete' : classicStatuses.length ? 'done' : 'start'
+  const classicActive = classicStatus === 'resume'
+  const classicResumePlan = todayPlans[classicStatuses.findIndex(status => status === 'resume')] || null
+  const unavailableClassicIds = new Set(todayPlans
+    .filter((_, index) => classicStatuses[index] !== 'start')
+    .map(plan => plan.id))
+  const dayFreestyle = (S.workouts || []).filter(w => w.d === selectedISO && !w.routineId)
+  const openRoutineId = reconcileStartSessionChoice(todayPlans, unavailableClassicIds, null)
+  const openRoutine = todayPlans.find(r => r.id === openRoutineId) || null
+  const todayOvr = Object.prototype.hasOwnProperty.call(S.dayPlan || {}, selectedISO)
+  const isPast = selectedISO < todayISOValue
+  const selectedLabel = selectedISO === todayISOValue
+    ? t('Today')
+    : new Date(selectedISO + 'T12:00:00').toLocaleDateString(dateLocale(), { weekday: 'long', day: 'numeric', month: 'short' })
   const bw = lastBW(S)
   const prevBW = S.bodyweight.length > 1 ? S.bodyweight[S.bodyweight.length - 2] : null
   const delta = bw && prevBW ? bw.w - prevBW.w : null
 
   const monday = new Date(today); monday.setDate(today.getDate() - ((today.getDay() + 6) % 7) + weekOffset * 7)
-  const doneDays = new Set(S.workouts.map(w => w.d))
+  const unitWorkouts = workoutsForUnit(S)
+  const doneDays = new Set(unitWorkouts.map(w => w.d))
   const strip = []
   for (let i = 0; i < 7; i++) {
     const d = new Date(monday); d.setDate(monday.getDate() + i)
     const iso = isoOf(d)
-    const eff = effectiveRoutineId(S, iso), ovr = S.dayPlan[iso] !== undefined, done = doneDays.has(iso)
-    const dot = done ? ' done' : ovr && eff ? ' ovr' : eff ? ' plan' : ''
-    strip.push(<div key={i} className={'wday' + (iso === todayISO() ? ' today' : '')} onClick={() => dayOverrideSheet(iso)}>
-      <div className="lbl">{t(DAYS[d.getDay()])}</div><div className="num">{d.getDate()}</div><div className={'dot' + dot} /></div>)
+    const eff = effectiveRoutineIds(S, iso), ovr = Object.prototype.hasOwnProperty.call(S.dayPlan || {}, iso), done = doneDays.has(iso)
+    const dot = done ? ' done' : ovr && eff.length ? ' ovr' : eff.length ? ' plan' : ''
+    const programmeItem = programmeQueue.items.find(item => item.source === 'programme' && item.projectedDate === iso)
+    const programmeColour = programmeColourForItem(S, programmeItem)
+    strip.push(<div key={i} className={'wday' + (iso === todayISOValue ? ' today' : '') + (iso === selectedISO ? ' sel' : '')} onClick={() => setSelectedISO(iso)} onContextMenu={e => { e.preventDefault(); dayOverrideSheet(iso) }}>
+      <div className="lbl">{t(DAYS[d.getDay()])}</div><div className="num">{d.getDate()}</div><div className={'dot' + dot} style={programmeColour ? { background: programmeColour } : undefined} /></div>)
   }
   const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6)
   const wkLabel = weekOffset === 0 ? t('This week') : `${monday.getDate()} ${monday.toLocaleDateString(dateLocale(), { month: 'short' })} – ${sunday.getDate()} ${sunday.toLocaleDateString(dateLocale(), { month: 'short' })}`
 
-  const wThisWeek = S.workouts.filter(w => weekKey(w.d) === weekKey(todayISO())).length
+  const wThisWeek = unitWorkouts.filter(w => weekKey(w.d) === weekKey(todayISOValue)).length
   const plannedPerWeek = Object.keys(S.week).filter(k => S.week[k]).length
   const bwPoints = S.bodyweight.slice(-30).map(b => ({ t: b.t || new Date(b.d).getTime(), y: b.w, d: b.d }))
 
-  // today's session shown right under the week strip
-  const onToday = () => { if (S.active) nav('/workout'); else if (routine) startFlow(routine.id); else dayOverrideSheet(todayISO()) }
+  const openRoutineDetail = routineId => {
+    const currentRoutine = S.routines.find(candidate => String(candidate.id) === String(routineId) && !candidate.draft)
+    if (currentRoutine) nav('/plan/r/' + encodeURIComponent(currentRoutine.id))
+    else dayViewSheet(selectedISO)
+  }
+
+  // Starting is reserved for the explicit button. The row itself is the view/edit target.
+  const onTodayStart = event => {
+    event?.stopPropagation()
+    if (S.active) nav('/workout')
+    else if (isPast) { dayViewSheet(selectedISO); return }
+    else if (todayPlans.length === 1 && openRoutine) startFlow(openRoutine.id, null, { calendarDate: selectedISO })
+    else if (todayPlans.length) startSessionSheet(selectedISO)
+    else if (programmeQueue.eligible.length && programmeQueue.front
+      && !(programmeQueue.front.source === 'classic' && doneToday.has(programmeQueue.front.routineId))) {
+      const head = programmeQueue.front
+      startFlow(head.routineId, head.source === 'programme' ? head : null, { calendarDate: selectedISO })
+    }
+    else dayOverrideSheet(selectedISO)
+  }
+  const onTodayRow = () => {
+    if (classicActive) {
+      if (S.active) nav('/workout')
+      else resumeWeeklySession({ source: 'classic', routineId: classicResumePlan?.id, calendarDate: selectedISO })
+    }
+    else if (isPast) dayViewSheet(selectedISO)
+    else if (todayPlans.length === 1 && openRoutine) openRoutineDetail(openRoutine.id)
+    else if (todayPlans.length) startSessionSheet(selectedISO)
+    else dayOverrideSheet(selectedISO)
+  }
 
   return <div className="narrow">
     <div className="hdr">
@@ -58,23 +150,105 @@ export default function Home() {
         <button className="iconbtn" style={{ width: 30, height: 30, fontSize: 15 }} onClick={() => setWeekOffset(w => w + 1)} aria-label="Next week"><Icon name="chevronRight" /></button>
       </div>
       <div className="week">{strip}</div>
-      <div className="today-row" onClick={onToday}>
+      <div className="today-row" onClick={onTodayRow}>
         <div className="row" style={{ gap: 9, minWidth: 0 }}>
-          <span className="lrow-i" style={{ background: S.active ? 'var(--orange)' : routine ? 'var(--acc)' : 'var(--surface-3)' }}>
-            <Icon name={S.active ? 'timer' : routine ? glyphOf(routine.emoji) : 'moon'} />
+          <span className="lrow-i" style={{ background: classicActive ? 'var(--orange)' : routine ? 'var(--acc)' : 'var(--surface-3)' }}>
+            <Icon name={classicActive ? 'timer' : routine ? glyphOf(routine.emoji) : 'moon'} />
           </span>
           <div style={{ minWidth: 0 }}>
-            <div className="lbl2">{t('Today')}</div>
-            <div className="ttl">{S.active ? t('{0} — in progress', S.active.name) : routine ? routine.name : t('Rest day')}{todayOvr && routine ? ' · ' + t('rescheduled') : ''}</div>
+            <div className="lbl2">{selectedLabel}</div>
+            <div className={'ttl' + (!classicActive && todayPlans.length > 1 ? ' home-routine-list' : '')}>{classicActive && S.active ? t('{0} — in progress', S.active.name) : todayPlans.length > 1 ? todayPlans.map(r => <span key={r.id} className="home-routine">{r.name}</span>) : todayPlans.length ? todayPlans[0].name : t('Rest day')}{todayOvr && todayPlans.length ? <span className="home-routine-meta"> · {t('rescheduled')}</span> : null}</div>
           </div>
         </div>
-        {S.active ? <span className="tag" style={{ color: 'var(--orange)', background: 'color-mix(in srgb,var(--orange) 16%,transparent)' }}>{t('Resume')}</span>
-          : routine ? <span className="tag acc">{t('Start')}</span>
-          : <Icon name="plus" className="chev" />}
+        {classicActive ? <Button type="button" variant="primary" size="sm" className="home-start-action" onClick={event => { event.stopPropagation(); onTodayRow() }}>{t('Resume')}</Button>
+          : isPast
+            ? <span className="row" style={{ gap: 8 }} onClick={e => e.stopPropagation()}>
+                {doneToday.has(todayPlans[0]?.id) && <Icon name="check" className="accent" />}
+                <Button variant="ghost" className="dim" style={{ padding: '6px 10px', fontSize: 13 }} onClick={() => dayViewSheet(selectedISO)}>{t('View')}</Button>
+                <Button variant="primary" style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => startFlow(openRoutine ? openRoutine.id : (todayPlans[0]?.id ?? null), null, { calendarDate: selectedISO, allowSettled: true })}>{t('Repeat')}</Button>
+              </span>
+            : classicStatus === 'incomplete'
+              ? <span className="row" style={{ gap: 8 }} onClick={e => e.stopPropagation()}>
+                  <Button variant="ghost" className="dim" aria-label={t('Edit day')} style={{ padding: '6px 9px' }} onClick={() => dayOverrideSheet(selectedISO)}><Icon name="pencil" /></Button>
+                  <span className="tag">{t('Incomplete')}</span>
+                </span>
+            : openRoutine || todayPlans.length
+              ? <span className="row" style={{ gap: 8 }} onClick={e => e.stopPropagation()}>
+                  <Button variant="ghost" className="dim" aria-label={t('Edit day')} style={{ padding: '6px 9px' }} onClick={() => dayOverrideSheet(selectedISO)}><Icon name="pencil" /></Button>
+                  {openRoutine ? <Button type="button" variant="primary" size="sm" className="home-start-action" aria-label={t('Start session')} onClick={onTodayStart}>{t('Start')}</Button> : todayPlans.length ? <span className="tag">{t('Done')}</span> : null}
+                </span>
+              : <Icon name="plus" className="chev" />}
       </div>
+      {programmeToday.map(item => (() => {
+        const sessionStatus = weeklySessionStatus(S, {
+          source: 'programme', routineId: item.routineId, instanceId: item.instanceId,
+          calendarDate: item.nominalDate, status: item.status
+        })
+        const dispositionLabel = programmeStatus(sessionStatus)
+        const canStart = sessionStatus === 'start' || sessionStatus === 'owed'
+        const canResume = sessionStatus === 'resume'
+        const resumeProgramme = event => {
+          event?.stopPropagation()
+          if (S.active) nav('/workout')
+          else resumeWeeklySession({ source: 'programme', routineId: item.routineId, instanceId: item.instanceId, calendarDate: item.nominalDate })
+        }
+        const routineName = item.routineSnapshot?.name
+          || S.routines.find(r => r.id === item.routineId)?.name
+          || item.routineId
+          || t('Routine')
+        const label = programmeLabelForItem(S, item)
+        const onProgrammeStart = event => {
+          event.stopPropagation()
+          if (S.active) nav('/workout')
+          else startFlow(item.routineId, item)
+        }
+        return <div key={item.instanceId} className="today-row" aria-label={label} style={{ borderTop: '1px solid var(--line)' }} onClick={() => canResume ? resumeProgramme() : S.active ? nav('/workout') : canStart ? openRoutineDetail(item.routineId) : dayViewSheet(selectedISO)}>
+          <div className="row" style={{ gap: 9, minWidth: 0 }}>
+            <span className="lrow-i" style={{ background: programmeColourForItem(S, item) || 'var(--surface-3)' }}>
+              <Icon name={item.routineSnapshot ? glyphOf(item.routineSnapshot.emoji) : 'calendar'} />
+            </span>
+            <div style={{ minWidth: 0 }}>
+              <div className="lbl2">{programmeNameForItem(S, item)}</div>
+              <div className="ttl">{routineName}</div>
+            </div>
+          </div>
+          {isPast
+            ? <span className="row" style={{ gap: 8 }} onClick={e => e.stopPropagation()}>
+                {doneToday.has(item.routineId) && <Icon name="check" className="accent" />}
+                <Button variant="ghost" className="dim" style={{ padding: '6px 10px', fontSize: 13 }} onClick={() => dayViewSheet(selectedISO)}>{t('View')}</Button>
+                <Button variant="primary" style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => startFlow(item.routineId, item)}>{t('Repeat')}</Button>
+              </span>
+            : <span className="row" style={{ gap: 8 }} onClick={e => e.stopPropagation()}>
+                <Button variant="ghost" className="dim" aria-label={t('Edit day')} style={{ padding: '6px 9px' }} onClick={() => dayOverrideSheet(selectedISO)}><Icon name="pencil" /></Button>
+                {canResume
+                  ? <Button type="button" variant="primary" size="sm" className="home-start-action" onClick={resumeProgramme}>{t('Resume')}</Button>
+                  : canStart
+                  ? <Button type="button" variant="primary" size="sm" className="home-start-action" aria-label={t('Start session')} onClick={onProgrammeStart}>{t('Start')}</Button>
+                  : <span className="tag">{dispositionLabel}</span>}
+              </span>}
+        </div>
+      })())}
+      {dayFreestyle.map(w => !S.active && (
+        <div key={w.id} className="today-row" style={{ borderTop: '1px solid var(--line)' }} onClick={() => dayViewSheet(selectedISO)}>
+          <div className="row" style={{ gap: 9, minWidth: 0 }}>
+            <span className="lrow-i" style={{ background: 'var(--surface-2)' }}>
+              <Icon name="sparkles" />
+            </span>
+            <div style={{ minWidth: 0 }}>
+              <div className="lbl2">{t('Freestyle')}</div>
+              <div className="ttl">{w.name || t('Session')}</div>
+            </div>
+          </div>
+          <span className="row" style={{ gap: 8 }} onClick={e => e.stopPropagation()}>
+            <Icon name="check" className="accent" />
+            <Button variant="ghost" className="dim" style={{ padding: '6px 10px', fontSize: 13 }} onClick={() => dayViewSheet(selectedISO)}>{t('View')}</Button>
+            <Button variant="primary" style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => repeatFreestyleSheet(S, w, (source, bw) => beginWorkout(null, bw, null, source))}>{t('Repeat')}</Button>
+          </span>
+        </div>
+      ))}
     </div>
 
-    {!S.routines.length && !S.active && (
+    {!S.routines.some(r => !r.draft) && !S.active && (
       <div className="card">
         <div className="row" style={{ gap: 10, marginBottom: 6 }}>
           <span className="lrow-i"><Icon name="sparkles" /></span>
@@ -123,7 +297,7 @@ export default function Home() {
             <Icon name="flame" style={{ color: 'var(--orange)' }} />
             {t('{0} week streak', streakWeeks(S))}
           </div>
-          <div className="muted small" style={{ marginTop: 2 }}>{wThisWeek}{plannedPerWeek ? ' / ' + plannedPerWeek : ''} {t('this week')} · {t(S.workouts.length === 1 ? '{0} workout total' : '{0} workouts total', S.workouts.length)}</div>
+          <div className="muted small" style={{ marginTop: 2 }}>{wThisWeek}{plannedPerWeek ? ' / ' + plannedPerWeek : ''} {t('this week')} · {t(unitWorkouts.length === 1 ? '{0} workout total' : '{0} workouts total', unitWorkouts.length)}</div>
         </div>
         <Icon name="calendar" className="chev" style={{ fontSize: 20 }} />
       </div>

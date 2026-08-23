@@ -20,7 +20,7 @@
 
 import { EXDB, EXIDX } from './exercises.js'
 import { uid } from './format.js'
-import { isWarmupRow } from './workout-model.js'
+import { modeForSet, normalizeWeightUnit, historyUnitCompatible, isWorkRow } from './workout-model.js'
 
 /* ----------------------------------------------------------------- CSV ---- */
 
@@ -120,7 +120,7 @@ const SYN = [
 // Words that say nothing about which exercise this is, so they shouldn't stop a match.
 const FILLER = new Set(['the', 'a', 'with', 'and', 'v', 'variation', 'version', 'pulley', 'weighted'])
 
-function wordsOf(name) {
+export function wordsOf(name) {
   // Parentheses are unwrapped rather than dropped: "Bench Press (Barbell)" carries its
   // equipment in there, and the dataset writes that as "barbell bench press".
   let k = String(name || '').toLowerCase()
@@ -130,7 +130,7 @@ function wordsOf(name) {
   SYN.forEach(([re, to]) => { k = k.replace(re, to) })
   return k.split(' ').filter(w => w && !FILLER.has(w))
 }
-const keyOf = name => wordsOf(name).sort().join(' ')
+export const keyOf = name => wordsOf(name).sort().join(' ')
 
 let INDEX = null
 function buildIndex() {
@@ -156,13 +156,36 @@ function buildIndex() {
 // Extending this table is the intended way to improve import accuracy.
 const ALIAS_EX = {
   'bench press': '0025', 'barbell bench press': '0025', 'flat bench press': '0025',
+  'flat barbell bench press': '0025', 'ab wheel rollout': '0857',
+  'kettlebell swings (2 hand)': '0549', 'dumbbell overhead triceps extension': '0430',
+  'rings row': '0808', 'flat dumbbell fly': '0308', 'parallel bar triceps dip': '1755',
+  'turkish get up': '0551', 'single leg deadlift': '1756', 'step up': '0114',
+  'back lunge (barbell)': '0078',
   'incline bench press': '0047', 'decline bench press': '0033',
   'close grip bench press': '0030', 'close-grip bench press': '0030',
   squat: '0043', 'back squat': '0043', 'barbell squat': '0043', 'front squat': '0042',
   deadlift: '0032', 'romanian deadlift': '0085', rdl: '0085', 'sumo deadlift': '0117',
   'lat pulldown': '2330', 'lat pull down': '2330', pulldown: '2330',
   shrug: '0095', shrugs: '0095',
-  'overhead press': '0091', 'military press': '0091', 'shoulder press': '0091', ohp: '0091',
+  // Unqualified and explicitly-standing barbell names use the canonical military press identity.
+  'overhead press': '1457', 'military press': '1457', 'shoulder press': '1457', ohp: '1457',
+  'barbell overhead press': '1457', 'overhead press (barbell)': '1457', 'barbell ohp': '1457',
+  'barbell military press': '1457', 'military press (barbell)': '1457',
+  'barbell shoulder press': '1457', 'shoulder press (barbell)': '1457',
+  'standing overhead press': '1457', 'standing military press': '1457', 'standing shoulder press': '1457',
+  'standing ohp': '1457',
+  'barbell standing overhead press': '1457', 'standing barbell overhead press': '1457',
+  'barbell standing military press': '1457', 'standing barbell military press': '1457',
+  'barbell standing shoulder press': '1457', 'standing barbell shoulder press': '1457',
+  // An explicit seated qualifier always retains the seated-press identity.
+  'seated overhead press': '0091', 'seated military press': '0091', 'seated shoulder press': '0091',
+  'seated ohp': '0091',
+  'barbell seated overhead press': '0091', 'seated barbell overhead press': '0091',
+  'seated overhead press (barbell)': '0091',
+  'barbell seated military press': '0091', 'seated barbell military press': '0091',
+  'seated military press (barbell)': '0091',
+  'barbell seated shoulder press': '0091', 'seated barbell shoulder press': '0091',
+  'seated shoulder press (barbell)': '0091',
   'barbell row': '0027', 'bent over row': '0027', 'bent-over row': '0027',
   'dumbbell row': '0292', 'one arm dumbbell row': '0292',
   'leg curl': '0586', 'lying leg curl': '0586', 'seated leg curl': '0586',
@@ -280,7 +303,7 @@ export function parseWhen(s) {
 }
 const hm = (h, mi) => (h === undefined ? null : (parseInt(h, 10) || 0) * 3600000 + (parseInt(mi, 10) || 0) * 60000)
 
-/** "HH:MM:SS" · "MM:SS" · "90" -> minutes */
+/** "HH:MM:SS" · "MM:SS" · "90" -> minutes (the cardio source convention) */
 function toMinutes(v) {
   const s = String(v ?? '').trim()
   if (!s) return 0
@@ -292,6 +315,21 @@ function toMinutes(v) {
   const m = s.match(/(\d+)\s*h/i), mm = s.match(/(\d+)\s*m/i)      // Strong's "2h 38m"
   if (m || mm) return (m ? +m[1] * 60 : 0) + (mm ? +mm[1] : 0)
   return Math.round(num(s) * 10) / 10
+}
+
+/** "HH:MM:SS" · "MM:SS" · "45" -> seconds (the timed-exercise convention) */
+function toSeconds(v) {
+  const s = String(v ?? '').trim()
+  if (!s) return 0
+  if (s.includes(':')) {
+    const p = s.split(':').map(x => num(x))
+    return Math.round((p.length === 3 ? p[0] * 3600 + p[1] * 60 + p[2] : p[0] * 60 + p[1]))
+  }
+  const h = s.match(/(\d+(?:\.\d+)?)\s*h/i)
+  const m = s.match(/(\d+(?:\.\d+)?)\s*m/i)
+  const sec = s.match(/(\d+(?:\.\d+)?)\s*s(?:ec(?:ond)?s?)?/i)
+  if (h || m || sec) return Math.round((h ? +h[1] * 3600 : 0) + (m ? +m[1] * 60 : 0) + (sec ? +sec[1] : 0))
+  return Math.round(num(s))
 }
 const KM = { m: 0.001, km: 1, cm: 0.00001, in: 0.0000254, ft: 0.0003048, yd: 0.0009144, mi: 1.609344 }
 const toKm = (v, unit) => num(v) * (KM[String(unit || 'km').toLowerCase().trim()] ?? 1)
@@ -316,10 +354,17 @@ export function parseWorkoutCSV(text, { unit = 'kg' } = {}) {
   const byDate = new Map()
   const created = new Map()
   const unmatched = new Set()
-  let sets = 0, skipped = 0, matched = 0, warmups = 0, rpeSets = 0, rirSets = 0
+  let sets = 0, skipped = 0, matched = 0, warmups = 0, unknownWeightRows = 0, rpeSets = 0, rirSets = 0
   let sawLb = false, sawKg = false
 
   const cell = (r, f) => (map[f] === undefined ? '' : String(r[map[f]] ?? '').trim())
+  // Some established exporters (Strong/FitNotes and effort-only legacy CSVs) omit a unit
+  // column altogether. Preserve their old profile-unit behavior, but keep phase-aware files
+  // fail-closed: an explicit Set Type or unit column means an untagged weighted row is unsafe.
+  const legacyUnitFallback = map.weightUnit === undefined && map.weightKg === undefined && map.weightLb === undefined
+    && map.setType === undefined
+    && (source === 'Strong' || source === 'FitNotes' || source === 'FitNotes (iOS)'
+      || map.rpe !== undefined || map.rir !== undefined)
 
   for (let i = 1; i < rows.length; i++) {
     const r = rows[i]
@@ -333,21 +378,28 @@ export function parseWorkoutCSV(text, { unit = 'kg' } = {}) {
     else if (map.weightLb !== undefined && cell(r, 'weightLb')) { w = num(cell(r, 'weightLb')); rowUnit = 'lb' }
     else {
       w = num(cell(r, 'weight'))
-      const u = cell(r, 'weightUnit').toLowerCase()
-      rowUnit = u.startsWith('lb') ? 'lb' : u.startsWith('kg') ? 'kg' : ''
+      rowUnit = normalizeWeightUnit(cell(r, 'weightUnit')) || ''
+    }
+    if (w > 0 && !rowUnit && !legacyUnitFallback) {
+      unknownWeightRows++
+      skipped++
+      continue
     }
     if (rowUnit === 'lb') sawLb = true
     if (rowUnit === 'kg') sawKg = true
 
     const reps = Math.round(num(cell(r, 'reps')))
-    const secs = num(cell(r, 'seconds'))
-    const mins = secs > 0 ? Math.round(secs / 60 * 10) / 10 : toMinutes(cell(r, 'time'))
+    const sourceSeconds = toSeconds(cell(r, 'seconds'))
+    const durationSeconds = sourceSeconds > 0 ? Math.round(sourceSeconds) : toSeconds(cell(r, 'time'))
+    const durationMinutes = sourceSeconds > 0
+      ? Math.round(sourceSeconds / 60 * 10) / 10
+      : toMinutes(cell(r, 'time'))
     const km = map.distanceKm !== undefined && cell(r, 'distanceKm')
       ? num(cell(r, 'distanceKm'))
       : toKm(cell(r, 'distance'), cell(r, 'distanceUnit'))
-    if (!w && !reps && !mins && !km) { skipped++; continue }
-    const warmup = /warm/i.test(cell(r, 'setType'))
-    if (warmup) warmups++
+    if (!w && !reps && !durationSeconds && !km) { skipped++; continue }
+    const phase = /warm/i.test(cell(r, 'setType')) ? 'warmup' : 'work'
+    if (phase === 'warmup') warmups++
 
     const key = keyOf(name)
     let id = resolved.get(key)
@@ -358,7 +410,7 @@ export function parseWorkoutCSV(text, { unit = 'kg' } = {}) {
       if (!c) {
         c = {
           id: 'im' + uid(), n: name.toLowerCase(), custom: true, eq: 'custom', tg: '', desc: '',
-          bp: CATEGORY_BP[cell(r, 'category').toLowerCase()] || (km || (mins && !reps) ? 'cardio' : 'upper legs'),
+          bp: CATEGORY_BP[cell(r, 'category').toLowerCase()] || (km ? 'cardio' : 'upper legs'),
         }
         created.set(key, c)
         unmatched.add(name)
@@ -366,16 +418,26 @@ export function parseWorkoutCSV(text, { unit = 'kg' } = {}) {
       id = c.id
     }
 
-    const isCardio = (km > 0 || mins > 0) && !reps
+    // Resolve the exercise before selecting the row shape. A duration is a timed strength
+    // result for a plank/hang, but a catalogued cardio exercise (or any distance row) keeps the
+    // legacy duration+speed shape. Reps still win over a generic Duration field because Strong
+    // exports workout duration alongside ordinary repetition rows.
+    const exercise = EXIDX[id] || created.get(key)
+    const isCardio = km > 0 || exercise?.bp === 'cardio'
+    const isTimed = !isCardio && !reps && durationSeconds > 0
+    const weighted = w > 0 ? { w, u: rowUnit } : {}
     // `u` carries the row's own unit into the conversion pass below and is dropped there —
     // it never reaches the stored set.
+    const phaseData = legacyUnitFallback ? {} : { phase }
     const set = isCardio
-      ? { min: mins || 0, speed: mins > 0 ? Math.round(km / (mins / 60) * 10) / 10 : 0, done: true, ...(warmup ? { phase: 'warmup' } : {}) }
-      : { w, r: reps || 0, done: true, u: rowUnit, ...(warmup ? { phase: 'warmup' } : {}) }
+      ? { ...phaseData, min: durationMinutes || 0, speed: durationMinutes > 0 ? Math.round(km / (durationMinutes / 60) * 10) / 10 : 0, done: true, ...weighted }
+      : isTimed
+        ? { ...phaseData, mode: 'time', sec: durationSeconds, w, done: true, u: rowUnit }
+        : { ...phaseData, w, r: reps || 0, done: true, u: rowUnit }
     // Effort rides along only where the app can show it again: a weighted rep set. A treadmill
     // row with an RPE would have nowhere to put it. A set is kept on one scale, so a file
     // carrying both columns is read as RIR — the same precedence setLabel reads them back with.
-    if (!isCardio) {
+    if (!isCardio && !isTimed) {
       const rir = effortNum(cell(r, 'rir'), true)
       const rpe = rir == null ? effortNum(cell(r, 'rpe'), false) : null
       if (rir != null) { set.rir = rir; rirSets++ }
@@ -406,27 +468,41 @@ export function parseWorkoutCSV(text, { unit = 'kg' } = {}) {
   const toLb = x => Math.round(x / LB_TO_KG * 10) / 10
   // A row without its own unit follows the file's, and a file that says nothing is taken
   // to already be in the profile's unit.
+  const destinationUnit = normalizeWeightUnit(unit) || 'kg'
   const convRow = s => {
     const u = s.u || fileUnit
-    if (!u || u === unit) return s.w
-    return u === 'lb' ? toKg(s.w) : toLb(s.w)
+    if (!u || u === destinationUnit) return s.w
+    return u === 'lb' ? (destinationUnit === 'kg' ? toKg(s.w) : s.w) : toLb(s.w)
   }
-  const converted = (!!fileUnit && fileUnit !== unit) || mixedUnits
+  const converted = (!!fileUnit && fileUnit !== destinationUnit) || mixedUnits
+  const sourceUnit = mixedUnits ? 'mixed' : (fileUnit || null)
 
   const dates = [...byDate.keys()].sort()
   const workouts = dates.map(d => {
     const day = byDate.get(d)
     const entries = [...day.ex.entries()].map(([id, ss]) => {
-      const conv2 = ss.map(({ u, ...s }) => (s.w !== undefined ? { ...s, w: convRow({ ...s, u }) } : s))
-      const mx = Math.max(0, ...conv2.filter(s => !isWarmupRow(s)).map(s => s.w || 0))
-      return { id, sets: conv2, topW: mx || null }
+      const conv2 = ss.map(({ u, ...s }) => {
+        if (s.w === undefined) return s
+        const convertedSet = { ...s, w: convRow({ ...s, u }) }
+        // A row without its own unit follows the file's, and a file that says nothing is taken
+        // to already be in the profile's unit - so every positive weighted set is always
+        // resolvable and must carry the stamp, or the workout-model fail-closes the whole
+        // record as partially unit-missing and the import never shows up in stats.
+        return s.w > 0 ? { ...convertedSet, unit: destinationUnit } : convertedSet
+      })
+      const mx = Math.max(0, ...conv2
+        .filter(s => isWorkRow(s) && modeForSet(s, { id }) === 'reps')
+        .map(s => s.w || 0))
+      return { id, ...(mx > 0 ? { unit: destinationUnit } : {}), sets: conv2, topW: mx || null }
     })
     const base = new Date(d + 'T00:00:00').getTime()
     const start = base + (day.start ?? 18 * 3600000)
     const end = day.end != null ? base + day.end : start
     const w = {
       id: 'iw' + uid(), d, start, end: end > start ? end : start,
-      routineId: null, name: day.name || 'Imported', entries, prs: [],
+      routineId: null, name: day.name || 'Imported',
+      ...(entries.some(entry => entry.sets.some(set => set.w > 0)) ? { unit: destinationUnit } : {}),
+      sourceUnit, entries, prs: [],
     }
     w.vol = entries.reduce((a, e) => a + e.sets.reduce((b, s) => b + (s.w || 0) * (s.r || 0), 0), 0)
     return w
@@ -439,7 +515,7 @@ export function parseWorkoutCSV(text, { unit = 'kg' } = {}) {
     matched: new Set([...resolved.values()].filter(Boolean)).size,
     matchedSets: matched,
     created: created.size, unmatchedNames: [...unmatched].sort(),
-    sets, skipped, warmups, fileUnit, mixedUnits, converted, rpeSets, rirSets,
+    sets, skipped, unknownWeightRows, warmups, fileUnit, mixedUnits, converted, rpeSets, rirSets,
     from: dates[0] || null, to: dates[dates.length - 1] || null,
   }
 }
@@ -454,10 +530,62 @@ export function parseWorkoutCSV(text, { unit = 'kg' } = {}) {
  * records are pulled out with a scan instead. Health writes weights in the unit the
  * phone is set to and labels each record, so the unit is read per record.
  */
+const convertBodyweightRecord = (record, destinationUnit) => {
+  const sourceUnit = normalizeWeightUnit(record.unit)
+  if (!sourceUnit || !(record.w > 0)) return null
+  let w = record.w
+  if (sourceUnit !== destinationUnit) {
+    w = sourceUnit === 'lb' && destinationUnit === 'kg'
+      ? w * LB_TO_KG
+      : w / LB_TO_KG
+  }
+  return { ...record, w: Math.round(w * 10) / 10, unit: destinationUnit }
+}
+
+function finishBodyweightImport(rawRecords, destinationUnit) {
+  let unknownWeightRows = 0
+  const sourceUnits = new Set()
+  const convertedRecords = []
+  for (const record of rawRecords) {
+    const sourceUnit = normalizeWeightUnit(record.unit)
+    if (record.w > 0 && !sourceUnit) {
+      unknownWeightRows++
+      continue
+    }
+    if (sourceUnit) sourceUnits.add(sourceUnit)
+    const converted = convertBodyweightRecord(record, destinationUnit)
+    if (converted) convertedRecords.push(converted)
+  }
+
+  // Keep the last valid weigh-in for a day, matching the previous import behaviour. Unknown
+  // rows are filtered before this step, so an unknown duplicate cannot erase a valid reading.
+  const out = new Map()
+  convertedRecords.forEach(record => out.set(record.d, record))
+  const dates = [...out.keys()].sort()
+  const fileUnit = sourceUnits.size === 1 ? [...sourceUnits][0] : ''
+  const mixedUnits = sourceUnits.size > 1
+  // Conversion status is also decided per raw record, never from whichever unit happened to
+  // appear last in the file.
+  const converted = rawRecords.some(record => {
+    const sourceUnit = normalizeWeightUnit(record.unit)
+    return sourceUnit && sourceUnit !== destinationUnit
+  })
+  return {
+    kind: 'bodyweight', source: 'Apple Health',
+    bodyweight: dates.map(d => {
+      const { unit, ...value } = out.get(d)
+      return value
+    }),
+    fileUnit, mixedUnits, converted,
+    unknownWeightRows,
+    from: dates[0] || null, to: dates[dates.length - 1] || null,
+  }
+}
+
 export function parseBodyweight(text, { unit = 'kg' } = {}) {
   const s = String(text)
-  const out = new Map()          // iso date -> { w, t }  (one weigh-in per day, the last)
-  let fileUnit = ''
+  const rawRecords = []
+  const destinationUnit = normalizeWeightUnit(unit) || 'kg'
 
   if (s.includes('HKQuantityTypeIdentifierBodyMass')) {
     const re = /<Record[^>]*type="HKQuantityTypeIdentifierBodyMass"[^>]*>/g
@@ -469,39 +597,44 @@ export function parseBodyweight(text, { unit = 'kg' } = {}) {
       const u = /unit="([^"]+)"/.exec(tag)
       if (!val || !dt) continue
       const when = parseWhen(dt[1])
-      if (!when) continue
-      if (u) fileUnit = /lb/i.test(u[1]) ? 'lb' : 'kg'
-      out.set(when.d, { w: parseFloat(val[1]), t: new Date(dt[1]).getTime() || null })
+      const w = parseFloat(val[1])
+      if (!when || !isFinite(w) || w <= 0) continue
+      rawRecords.push({ d: when.d, w, t: new Date(dt[1]).getTime() || null, unit: normalizeWeightUnit(u?.[1]) })
     }
   } else {
     const rows = parseCSV(s)
     if (rows.length < 2) return { error: 'empty' }
     const map = mapHeader(rows[0])
-    // a weight-only CSV: whichever weight column it has
-    const wCol = map.weightKg ?? map.weightLb ?? map.weight
+    const hasWeightColumn = map.weightKg !== undefined || map.weightLb !== undefined || map.weight !== undefined
     const dCol = map.date ?? map.startTime
-    if (wCol === undefined || dCol === undefined) return { error: 'unrecognised' }
-    if (map.weightKg !== undefined) fileUnit = 'kg'
-    else if (map.weightLb !== undefined) fileUnit = 'lb'
+    if (!hasWeightColumn || dCol === undefined) return { error: 'unrecognised' }
     for (let i = 1; i < rows.length; i++) {
-      const when = parseWhen(String(rows[i][dCol] ?? ''))
-      const w = num(rows[i][wCol])
-      if (!when || !w) continue
-      out.set(when.d, { w, t: new Date(when.d).getTime() + (when.t ?? 0) })
+      const row = rows[i]
+      const when = parseWhen(String(row[dCol] ?? ''))
+      let w = 0
+      let rowUnit = null
+      // Specialized columns retain their declared units, row by row. If both are present,
+      // keep the existing kg-first precedence; otherwise use the generic Weight Unit cell.
+      if (map.weightKg !== undefined && String(row[map.weightKg] ?? '').trim()) {
+        w = num(row[map.weightKg]); rowUnit = 'kg'
+      } else if (map.weightLb !== undefined && String(row[map.weightLb] ?? '').trim()) {
+        w = num(row[map.weightLb]); rowUnit = 'lb'
+      } else if (map.weight !== undefined) {
+        w = num(row[map.weight])
+        rowUnit = normalizeWeightUnit(row[map.weightUnit])
+      }
+      if (!when || !isFinite(w) || w <= 0) continue
+      rawRecords.push({
+        d: when.d,
+        w,
+        t: new Date(when.d).getTime() + (when.t ?? 0),
+        unit: normalizeWeightUnit(rowUnit)
+      })
     }
   }
 
-  if (!out.size) return { error: 'unrecognised' }
-  const converted = !!fileUnit && fileUnit !== unit
-  const conv = converted
-    ? (fileUnit === 'lb' ? x => Math.round(x * LB_TO_KG * 10) / 10 : x => Math.round(x / LB_TO_KG * 10) / 10)
-    : x => Math.round(x * 10) / 10
-  const dates = [...out.keys()].sort()
-  return {
-    kind: 'bodyweight', source: 'Apple Health',
-    bodyweight: dates.map(d => ({ d, w: conv(out.get(d).w), t: out.get(d).t || new Date(d).getTime() })),
-    fileUnit, converted, from: dates[0], to: dates[dates.length - 1],
-  }
+  if (!rawRecords.length) return { error: 'unrecognised' }
+  return finishBodyweightImport(rawRecords, destinationUnit)
 }
 
 /** Sniff the file and parse it as whatever it is. */
@@ -525,15 +658,21 @@ export function mergeImport(S, parsed) {
     return { added: fresh.length, skipped: parsed.bodyweight.length - fresh.length }
   }
   const have = new Set(S.workouts.map(w => w.d))
-  const fresh = parsed.workouts.filter(w => !have.has(w.d))
+  const compatible = parsed.workouts.filter(w => historyUnitCompatible(w, S.unit))
+  const unitRejected = parsed.workouts.length - compatible.length
+  const fresh = compatible.filter(w => !have.has(w.d))
   const used = new Set(fresh.flatMap(w => w.entries.map(e => e.id)))
   const customs = parsed.customEx.filter(c => used.has(c.id) && !EXIDX[c.id])
   S.customEx = [...(S.customEx || []), ...customs]
   S.workouts = [...S.workouts, ...fresh].sort((a, b) => (a.d < b.d ? -1 : 1))
   // seed the weight suggestions from the newest imported set of each lift
   fresh.forEach(w => w.entries.forEach(e => {
-    const mx = Math.max(0, ...e.sets.map(s => s.w || 0), e.topW || 0)
-    if (mx > 0) { const cur = S.exWeights[e.id]; if (!cur || w.d >= cur.d) S.exWeights[e.id] = { w: mx, d: w.d } }
+    const workSets = e.sets.filter(s => isWorkRow(s) && modeForSet(s, e.target || e) === 'reps')
+    const mx = Math.max(0, ...workSets.map(s => s.w || 0), e.topW || 0)
+    if (mx > 0) {
+      const cur = S.exWeights[e.id]
+      if (!cur || w.d >= cur.d) S.exWeights[e.id] = { w: mx, d: w.d, unit: normalizeWeightUnit(w.unit || S.unit) }
+    }
   }))
-  return { added: fresh.length, skipped: parsed.workouts.length - fresh.length }
+  return { added: fresh.length, skipped: parsed.workouts.length - fresh.length, unitRejected }
 }

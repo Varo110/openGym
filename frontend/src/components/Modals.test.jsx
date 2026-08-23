@@ -162,6 +162,23 @@ describe('Modals sheet history accounting', () => {
 })
 
 describe('Modals mouse dragging', () => {
+  it('dismisses an unlocked sheet after a downward swipe from its body', async () => {
+    vi.useFakeTimers()
+    await setSheets([sheet('swipe')])
+    const sheetEl = container.querySelector('.sheet')
+    sheetEl.scrollTop = 0
+
+    await act(async () => {
+      mouse(sheetEl, 'mousedown', 10)
+      mouse(sheetEl, 'mousemove', 120)
+      window.dispatchEvent(new dom.Event('mouseup'))
+      vi.advanceTimersByTime(180)
+    })
+
+    expect(mocks.state.sheets).toEqual([])
+    vi.useRealTimers()
+  })
+
   it('leaves range sliders opted out of sheet dragging', async () => {
     await setSheets([sheet('slider', {
       render: () => React.createElement('input', { type: 'range' }),

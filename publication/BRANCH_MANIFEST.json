@@ -1,0 +1,237 @@
+{
+  "schema_version": "opengym-publication-branch-manifest/v1",
+  "generated_at": "2026-08-23T22:44:21+02:00",
+  "purpose": "Clean local publication archive and contribution-sized source branches prepared from the verified accepted integration lineage.",
+  "authority": {
+    "accepted_source_ref": "refs/heads/integration/local-accepted-2026-08-23",
+    "accepted_commit": "da8d68c6f48a6634e7963c5c3e55279023a43189",
+    "accepted_tree": "236f115ebe5e25560341a16d87a906a7345ca7d7",
+    "lineage": [
+      "80e5d04fe9182f9867b2ff22527d6dda63446721",
+      "f3da92ac136ea87c934eb196574f0b11c676228b",
+      "da8d68c6f48a6634e7963c5c3e55279023a43189"
+    ],
+    "lineage_verified": true,
+    "accepted_source_status": "clean at authority readback",
+    "accepted_inventory_rows": 22,
+    "accepted_rows_assigned_to_primary_branches": 18,
+    "live_activation_claimed": false
+  },
+  "upstream": {
+    "canonical_remote": "gitlab",
+    "repository": "DuarteSantos/openGym",
+    "main_ref": "refs/remotes/gitlab/main",
+    "main_commit": "f8024d344debd556ad589c92eb71e77017a5445f",
+    "main_tree": "401c4234069d2a8b593e2844eb0d5655d7a3c874",
+    "release_tag": "v1.2.9",
+    "release_commit": "04ea5f2570c4ab041ac07a111f59ed79c64e136a",
+    "release_tree": "c05f7927297cdcc748c425d7d993da4953c3be0b",
+    "refreshed_before_extraction": true,
+    "remote_mutation_performed": false
+  },
+  "archive": {
+    "branch": "archive/public-source-2026-08-23",
+    "format": "orphan Git source snapshot",
+    "source_ref": "refs/heads/integration/local-accepted-2026-08-23",
+    "source_commit_preserved_as_metadata_only": true,
+    "sanitized_index_file_count": 349,
+    "public_bundle_must_include": [
+      "archive/public-source-2026-08-23",
+      "refs/remotes/gitlab/main",
+      "refs/tags/v1.2.9",
+      "contrib/*"
+    ],
+    "excluded_path_patterns": [
+      "artifacts/",
+      "docs/integration/",
+      "docs/R2-*",
+      "DEPLOY-D2-*",
+      "DEVELOPMENT-TODO.md",
+      "PHASE1-IMPLEMENTATION.md",
+      "docker-compose.tailscale.yml",
+      "frontend/public/mockup*.html",
+      "scripts/migrate-military-press-state*",
+      "scripts/r2_*",
+      "scripts/test_r2_*"
+    ],
+    "excluded_classes": [
+      "account state and private records",
+      "credentials, secrets and private backups",
+      "deployment overlays and host-specific operational material",
+      "generated bundles, readback/evidence artifacts and internal rollout documents"
+    ],
+    "retained_source_classes": [
+      "public application source",
+      "focused source tests",
+      "public documentation and licensing",
+      "source-only Android/iOS/Capacitor shell files"
+    ]
+  },
+  "capability_accounting": {
+    "baseline_upstream_equivalent": 1,
+    "primary_contribution_rows": 18,
+    "intentionally_local_only": 1,
+    "pending_or_unverified": 1,
+    "rejected": 1,
+    "duplicate_primary_assignments": [],
+    "local_only": {
+      "id": "f3_css_followup",
+      "source_commits": ["f3da92ac136ea87c934eb196574f0b11c676228b"],
+      "paths": ["frontend/src/index.css", "frontend/src/views/amrap-hit-target.browser.test.js"],
+      "reason": "Presentation-only AMRAP outline follow-up is retained in the accepted authority but is not duplicated into the functional progression branch."
+    },
+    "pending": {
+      "id": "unverified_alternate_worktrees",
+      "reason": "Dirty, detached or separate-object-db worktrees were not promoted without independent accepted-lineage evidence."
+    },
+    "rejected": {
+      "id": "rejected_private_operational_content",
+      "reason": "Private state, credentials, backups, overlays, generated output and internal evidence are outside publication scope."
+    }
+  },
+  "recommended_pr_order": [
+    {"order": 1, "branch": "contrib/exercise-catalogue-and-logging", "depends_on": []},
+    {"order": 2, "branch": "contrib/programme-lifecycle-and-completion", "depends_on": ["contrib/exercise-catalogue-and-logging"]},
+    {"order": 3, "branch": "contrib/home-weekly-planning", "depends_on": ["contrib/programme-lifecycle-and-completion"]},
+    {"order": 4, "branch": "contrib/phase-aware-workouts", "depends_on": ["contrib/programme-lifecycle-and-completion"]},
+    {"order": 5, "branch": "contrib/canonical-units-and-plan-interchange", "depends_on": ["contrib/exercise-catalogue-and-logging", "contrib/programme-lifecycle-and-completion", "contrib/phase-aware-workouts"]},
+    {"order": 6, "branch": "contrib/exercise-groups-and-setup", "depends_on": ["contrib/exercise-catalogue-and-logging", "contrib/programme-lifecycle-and-completion", "contrib/phase-aware-workouts"]},
+    {"order": 7, "branch": "contrib/progression-amrap-and-strength", "depends_on": ["contrib/exercise-catalogue-and-logging", "contrib/phase-aware-workouts", "contrib/canonical-units-and-plan-interchange"]},
+    {"order": 8, "branch": "contrib/session-navigation-and-timers", "depends_on": ["contrib/programme-lifecycle-and-completion", "contrib/phase-aware-workouts"]},
+    {"order": 9, "branch": "contrib/pwa-sync-and-mobile-runtime", "depends_on": ["contrib/progression-amrap-and-strength", "contrib/session-navigation-and-timers"]}
+  ],
+  "branches": [
+    {
+      "branch": "contrib/exercise-catalogue-and-logging",
+      "tip": "64ea41a",
+      "base_commit": "f8024d344debd556ad589c92eb71e77017a5445f",
+      "parent_branch": null,
+      "depends_on": [],
+      "scope": ["exercise catalogue", "equipment/bodyweight/per-side/cardio modes", "muscle metadata", "history/import vocabulary", "accepted da8d Stats follow-up"],
+      "source_refs": ["refs/heads/integration/local-accepted-2026-08-23"],
+      "source_commits": ["0cefcb3", "fbf125f", "32515e2", "801963a", "3893156", "c176005", "029c450", "4eb41c0", "84328ec", "3c7497e", "3e0e61d", "0a79235", "bb9f465", "8d98b39", "da8d68c"],
+      "allowed_diff_paths": ["frontend/src/lib/exercises*", "frontend/src/lib/muscles*", "frontend/src/lib/import-csv*", "frontend/src/views/Stats*", "frontend/src/sheets.jsx", "frontend/src/components/BodyMap.jsx", "frontend/src/views/RoutineEdit.jsx", "mcp/src/tools.js", "focused catalogue/import tests"],
+      "excluded_scope": ["private custom records", "raw/evidence datasets", "unit migration", "deployment/generated output"]
+    },
+    {
+      "branch": "contrib/programme-lifecycle-and-completion",
+      "tip": "a915753",
+      "base_commit": "64ea41a",
+      "parent_branch": "contrib/exercise-catalogue-and-logging",
+      "depends_on": ["contrib/exercise-catalogue-and-logging"],
+      "scope": ["programme builder", "queue/pickup/repeat", "partial/skip dispositions", "snapshot identity", "completion history", "freestyle isolation"],
+      "source_refs": ["refs/heads/integration/local-accepted-2026-08-23"],
+      "source_commits": ["3b24d3c", "3fb6785", "f2e28c2", "e4a28aa", "a9b367a", "26d2633", "8bd3fc4", "378660b", "4ff76be", "a9c4834", "9cabf6c", "c6621d0", "c265e3e", "706354e", "bf275d0"],
+      "allowed_diff_paths": ["frontend/src/lib/programmes*", "frontend/src/lib/partial*", "frontend/src/lib/programme-pickup*", "frontend/src/components/Programme*", "frontend/src/views/Programme*", "frontend/src/sheets.jsx", "frontend/src/views/Workout.jsx", "focused programme/freestyle tests"],
+      "excluded_scope": ["Home/week projections", "phase schema", "timers", "private workout history"]
+    },
+    {
+      "branch": "contrib/home-weekly-planning",
+      "tip": "cafa8a4",
+      "base_commit": "a915753",
+      "parent_branch": "contrib/programme-lifecycle-and-completion",
+      "depends_on": ["contrib/programme-lifecycle-and-completion"],
+      "scope": ["Home/day/week actions", "date overrides", "ordered multi-session selection", "resume/all-done status", "save-as behavior"],
+      "source_refs": ["refs/heads/integration/local-accepted-2026-08-23"],
+      "source_commits": ["a76dea5", "adbc797", "b30b50c", "aa83f46", "c5d5c3e", "fdbb661", "b8e7016", "11db72f", "6265cd3", "911decc", "6fe6141", "eda37d6", "9dabbbb", "1d9d8e8", "750163d"],
+      "allowed_diff_paths": ["frontend/src/views/Home*", "frontend/src/views/Plan*", "frontend/src/lib/history.js", "frontend/src/sheets.jsx", "frontend/src/components/TabBar.jsx", "mcp/src/tools.js", "focused Home/Plan tests"],
+      "excluded_scope": ["programme queue internals", "sheet-history mechanics", "timer implementation", "private day/programme data"]
+    },
+    {
+      "branch": "contrib/phase-aware-workouts",
+      "tip": "495f647",
+      "base_commit": "a915753",
+      "parent_branch": "contrib/programme-lifecycle-and-completion",
+      "depends_on": ["contrib/programme-lifecycle-and-completion"],
+      "scope": ["explicit warm-up/work phases", "legacy schema reads", "phase-aware set numbering", "work-only history/progression boundary"],
+      "source_refs": ["refs/heads/integration/local-accepted-2026-08-23"],
+      "source_commits": ["64d997c", "9f69d3a", "4688f07", "5ce0642", "076bff5", "d2a6122", "357caf6"],
+      "allowed_diff_paths": ["frontend/src/lib/workout-model.js", "frontend/src/lib/workout-runtime.js", "frontend/src/lib/history.js", "frontend/src/lib/effort.js", "frontend/src/lib/progression.js", "frontend/src/views/Workout.jsx", "focused phase tests"],
+      "excluded_scope": ["group pairing/removal", "strict identity", "AMRAP policy", "deployment/service-worker configuration"]
+    },
+    {
+      "branch": "contrib/canonical-units-and-plan-interchange",
+      "tip": "5dfba53",
+      "base_commit": "495f647",
+      "parent_branch": "contrib/phase-aware-workouts",
+      "depends_on": ["contrib/exercise-catalogue-and-logging", "contrib/programme-lifecycle-and-completion", "contrib/phase-aware-workouts"],
+      "scope": ["canonical kilogram storage", "display conversion", "unit aliases", "CSV/history boundary", "plan-share/API/MCP interchange"],
+      "source_refs": ["refs/heads/integration/local-accepted-2026-08-23"],
+      "source_commits": ["4942c080", "56631ee", "92b1c9f", "f97ecf4", "3d7843a", "9da2b84", "9cc2d8f", "ffc71c7", "af9289d", "238b435"],
+      "allowed_diff_paths": ["frontend/src/lib/units.js", "frontend/src/lib/workout-model.js", "frontend/src/lib/import-csv.js", "frontend/src/lib/plan-share.js", "frontend/src/views/Plan.jsx", "frontend/src/views/Settings.jsx", "mcp/src/tools.js", "mcp/src/state.js", "focused unit/import/plan tests"],
+      "excluded_scope": ["uploaded document contents", "private plans/backups/user state", "credentials", "deployment overlays", "new progression policy"]
+    },
+    {
+      "branch": "contrib/exercise-groups-and-setup",
+      "tip": "45b4b1f",
+      "base_commit": "495f647",
+      "parent_branch": "contrib/phase-aware-workouts",
+      "depends_on": ["contrib/exercise-catalogue-and-logging", "contrib/programme-lifecycle-and-completion", "contrib/phase-aware-workouts"],
+      "scope": ["strict exercise identity", "group/order editing", "pair/unpair/swap", "inter-exercise rest", "removal/undo cleanup", "cue/group metadata source behavior"],
+      "source_refs": ["refs/heads/integration/local-accepted-2026-08-23"],
+      "source_commits": ["636cfb4", "81a5633", "126046b", "abb84d2", "29801d1", "15bcc61", "80e5d04", "59d2158", "8a47af0", "dd91e6e", "40aa6b2", "8f866e8", "7b2e0cb", "7041210", "f546561", "0682751"],
+      "allowed_diff_paths": ["frontend/src/views/Workout.jsx", "frontend/src/sheets.jsx", "frontend/src/lib/history.js", "frontend/src/views/RoutineEdit.jsx", "focused group/editor/lifecycle tests"],
+      "excluded_scope": ["private annotation values", "raw custom records", "phase implementation", "AMRAP presentation", "timer state"]
+    },
+    {
+      "branch": "contrib/progression-amrap-and-strength",
+      "tip": "381abc6",
+      "base_commit": "5dfba53",
+      "parent_branch": "contrib/canonical-units-and-plan-interchange",
+      "depends_on": ["contrib/exercise-catalogue-and-logging", "contrib/phase-aware-workouts", "contrib/canonical-units-and-plan-interchange"],
+      "scope": ["per-set AMRAP roles/targets", "adaptive/current e1RM", "fatigue/recovery", "intensity-aware progression", "Stats recovery coverage"],
+      "source_refs": ["refs/heads/integration/local-accepted-2026-08-23"],
+      "source_commits": ["3e0d615", "fdfb299", "567d004", "587c1d9", "b718f64", "caaf61d", "5d998bb", "603059b", "16101e4", "0b1ea0c", "7f70b4d", "1633797", "7f8d05c", "7f5a782", "48eec20", "b76d2ae", "4d8928b", "0218f3a", "5111120", "80e5d04"],
+      "allowed_diff_paths": ["frontend/src/lib/recovery.js", "frontend/src/lib/strength-exercises.js", "frontend/src/lib/onerm.js", "frontend/src/lib/progression.js", "frontend/src/lib/history.js", "frontend/src/views/Stats.jsx", "frontend/src/views/Workout.jsx", "frontend/src/sheets.jsx", "frontend/src/views/Stats.recovery.test.jsx", "adjacent progression/e1RM tests"],
+      "excluded_scope": ["f3da92ac CSS/browser assertion local-only follow-up", "private workout history", "unit migration", "deployment/runtime state"]
+    },
+    {
+      "branch": "contrib/session-navigation-and-timers",
+      "tip": "744e3b2",
+      "base_commit": "495f647",
+      "parent_branch": "contrib/phase-aware-workouts",
+      "depends_on": ["contrib/programme-lifecycle-and-completion", "contrib/phase-aware-workouts"],
+      "scope": ["sheet history/back/Escape/swipe behavior", "rest/work timer navigation survival", "overtime decisions", "timer callback invalidation"],
+      "source_refs": ["refs/heads/integration/local-accepted-2026-08-23"],
+      "source_commits": ["f585e14", "6e0cb2e", "fbcd581", "bb4411e", "8ea542f", "4b39122", "4ed6529", "c2c26cf"],
+      "allowed_diff_paths": ["frontend/src/components/Modals.jsx", "frontend/src/components/RestTimer.jsx", "frontend/src/store/useUI.js", "frontend/src/store/useStore.js", "frontend/src/sheets.jsx", "frontend/src/views/Workout.jsx", "frontend/src/views/work-timer.test.jsx", "focused timer/navigation tests"],
+      "excluded_scope": ["service-worker deployment configuration", "sync-generation adoption", "wake-lock implementation", "private notification keys"]
+    },
+    {
+      "branch": "contrib/pwa-sync-and-mobile-runtime",
+      "tip": "de3cc27",
+      "base_commit": "744e3b2",
+      "parent_branch": "contrib/session-navigation-and-timers",
+      "depends_on": ["contrib/progression-amrap-and-strength", "contrib/session-navigation-and-timers"],
+      "scope": ["bounded sync/restore source behavior", "PWA/mobile lifecycle tests", "push/rest capability hooks", "wake-lock/mobile shell source"],
+      "source_refs": ["refs/heads/integration/local-accepted-2026-08-23"],
+      "source_commits": ["7800af8", "3e0c78b", "4e27461", "caaf61d", "4c2b634", "248da53", "ee2be74"],
+      "allowed_diff_paths": ["frontend/src/store/useStore.js", "frontend/src/store/useStore.restore.test.jsx", "frontend/src/store/useUI.js", "frontend/src/lib/effort.js", "frontend/src/lib/wakelock.js", "frontend/public/manifest.json", "frontend/public/sw.js", "frontend/src/components/ErrorBoundary.jsx", "frontend/src/components/LastPerformance.jsx", "source-only mobile shell files", "focused PWA/mobile tests"],
+      "excluded_scope": ["private state/backups", "credentials/notification keys", "APK/build output", "Docker/Compose/host infrastructure", "live activation"]
+    }
+  ],
+  "accepted_authority_followups": [
+    {"commit": "da8d68c6f48a6634e7963c5c3e55279023a43189", "parent": "f3da92ac136ea87c934eb196574f0b11c676228b", "assignment": "catalogue branch only", "reason": "Stats duplicate-list correction is not a new capability row."},
+    {"commit": "f3da92ac136ea87c934eb196574f0b11c676228b", "parent": "80e5d04fe9182f9867b2ff22527d6dda63446721", "assignment": "archive/local-only only", "reason": "AMRAP outline CSS/browser assertion is not included in functional progression extraction."}
+  ],
+  "verification": {
+    "branch_refs_created_locally": true,
+    "forbidden_path_scan": "pass for all contrib/* refs",
+    "public_bundle_scope": "will include only sanitized archive, GitLab main/tag and contrib/* refs",
+    "tests_run_at_manifest_creation": true,
+    "test_results": {
+      "frontend_full_on_sanitized_archive": "80 files / 1208 tests passed (Vitest; one non-failing happy-dom AbortError diagnostic)",
+      "api": "2 tests passed",
+      "mcp": "38 tests passed",
+      "frontend_build": "passed with Vite chunk-size warnings",
+      "mcp_node_loadable": "passed",
+      "fatigue_probe": "passed",
+      "session_timer_useUI": "12 tests passed",
+      "session_timer_work_timer": "2 tests passed",
+      "session_timer_navigation": "1 test passed"
+    },
+    "build_or_deploy_run": false,
+    "live_mutation": false,
+    "remaining_checks": ["run focused tests for each branch after dependency checkout", "verify bundle extraction and forbidden-path absence", "review shared-file hotspots before any remote push"]
+  }
+}

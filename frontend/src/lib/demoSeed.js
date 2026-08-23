@@ -106,7 +106,7 @@ export function buildDemoState() {
       for (let i = 0; i < cfg.sets; i++) {
         // last set is where reps usually start slipping
         const drop = i === cfg.sets - 1 && rnd() < 0.55 ? (rnd() < 0.4 ? 2 : 1) : 0
-        const s = { w, r: Math.max(4, cfg.reps - drop), done: true }
+        const s = { w, r: Math.max(4, cfg.reps - drop), done: true, ...(w > 0 ? { unit: 'kg' } : {}) }
         const rir = clamp(round(rir0
           + (cfg.sets - 1 - i) * 0.6      // a first set sits further from failure than a last
           - exIdx * 0.12                  // …and fatigue accumulates across the session
@@ -122,15 +122,15 @@ export function buildDemoState() {
         sets.push(s)
       }
       if (w > (best[cfg.id] || 0)) { best[cfg.id] = w; prs.push(cfg.id) }
-      exWeights[cfg.id] = { w: Math.max(w, exWeights[cfg.id]?.w || 0), d: iso }
-      return { id: cfg.id, sets, topW: w || null }
+      exWeights[cfg.id] = { w: Math.max(w, exWeights[cfg.id]?.w || 0), d: iso, unit: 'kg' }
+      return { id: cfg.id, ...(w > 0 ? { unit: 'kg' } : {}), sets, topW: w || null }
     })
 
     const bw = bodyweight.length ? bodyweight[bodyweight.length - 1].w : BW_FROM
     const startMs = at(day, 18, 5 + Math.floor(rnd() * 25))
     const w = {
       id: uid(), d: iso, start: startMs, end: startMs + (46 + Math.floor(rnd() * 26)) * 60000,
-      routineId: routine.id, name: routine.name, bw,
+      routineId: routine.id, name: routine.name, bw, unit: 'kg',
       entries,
       prs: weekIdx === 0 ? [] : prs   // the very first session isn't a PR party
     }
@@ -145,7 +145,7 @@ export function buildDemoState() {
   if (!byWeekday[today.getDay()] && !workouts.some(w => w.d === tIso)) {
     const order = [push, pull, legs]
     const lastName = workouts.length ? workouts[workouts.length - 1].name : legs.name
-    dayPlan[tIso] = order[(order.findIndex(r => r.name === lastName) + 1) % order.length].id
+    dayPlan[tIso] = [order[(order.findIndex(r => r.name === lastName) + 1) % order.length].id]
   }
 
   return {

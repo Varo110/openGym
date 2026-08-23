@@ -183,6 +183,44 @@ describe('get_week_plan', () => {
     expect(r.today_routine_name).toBe('Leg Day')
   })
 
+  test('a multi-plan override exposes every routine while keeping singular fields compatible', () => {
+    const legs = S.routines.find(r => r.name === 'Leg Day')
+    const push = S.routines.find(r => r.name === 'Push Day')
+    S.dayPlan[FAKE_TODAY_ISO] = [legs.id, push.id]
+
+    const r = call('get_week_plan')
+    expect(r.today_routine_ids).toEqual([legs.id, push.id])
+    expect(r.today_routine_names).toEqual(['Leg Day', 'Push Day'])
+    expect(r.today_routine_id).toBe(legs.id)
+    expect(r.today_routine_name).toBe('Leg Day')
+  })
+
+  test('keeps the legacy override scalar and exposes ordered ids for legacy and list values', () => {
+    const push = S.routines.find(r => r.name === 'Push Day')
+    const pull = S.routines.find(r => r.name === 'Pull Day')
+    const legs = S.routines.find(r => r.name === 'Leg Day')
+    const cases = [
+      ['missing', undefined, null, []],
+      ['scalar', pull.id, pull.id, [pull.id]],
+      ['ordered list', [legs.id, push.id], legs.id, [legs.id, push.id]],
+      ['list with stale ids', ['gone', pull.id], pull.id, [pull.id]],
+      ['empty list', [], null, []],
+      ['rest scalar', 'rest', 'rest', []],
+      ['rest in list', [pull.id, 'rest'], 'rest', []],
+      ['stale scalar', 'gone', null, []],
+      ['malformed value', { id: pull.id }, null, []]
+    ]
+    for (const [_label, override, legacy, ids] of cases) {
+      if (override === undefined) delete S.dayPlan[FAKE_TODAY_ISO]
+      else S.dayPlan[FAKE_TODAY_ISO] = override
+      const r = call('get_week_plan')
+      const today = r.weekdays.find(d => d.weekday === new Date(FAKE_TODAY_ISO + 'T12:00:00Z').getDay())
+      expect(today.override_for_today_or_null).toBe(legacy)
+      expect(today.override_for_today_ids).toEqual(ids)
+    }
+  })
+
+
   test('empty week + no override → today has no routine (a quiet Sunday)', () => {
     S.week = {}
     S.dayPlan = {}
