@@ -293,9 +293,13 @@ function ActiveWorkout() {
   // behave exactly as they do for a reps set.
   const startTimed = (idx, i) => {
     const e = A.entries[idx]
+    const workoutId = A.id
     useUI.getState().startWork(e.sets[i].sec || 45, exOr(e.id).n, elapsed => {
+      const active = useStore.getState().S.active
+      if (!active || active.id !== workoutId || !active.entries?.[idx]?.sets?.[i]) return
       mutEntry(idx, en => { en.sets[i].sec = elapsed })
-      if (!useStore.getState().S.active.entries[idx].sets[i].done) toggle(idx, i)
+      const current = useStore.getState().S.active
+      if (current?.id === workoutId && current.entries?.[idx]?.sets?.[i] && !current.entries[idx].sets[i].done) toggle(idx, i)
     })
   }
 
@@ -303,6 +307,17 @@ function ActiveWorkout() {
     const m = modeAt(idx)
     const cardioEntry = m === 'cardio'
     const isLastUnit = unitIdx >= units.length - 1
+    // Any set toggle is a lifecycle boundary: a finished timed hold is a completed planned set,
+    // so record it before invalidating timer callbacks. The callback re-enters this function;
+    // if it completed the exact unchecked row that was clicked, the outer invocation must not
+    // flip that row back off.
+    const wasDone = A.entries[idx]?.sets?.[i]?.done
+    if (useUI.getState().work?.done) {
+      useUI.getState().logWorkPlanned()
+      if (!wasDone && useStore.getState().S.active?.entries?.[idx]?.sets?.[i]?.done) return
+    } else {
+      useUI.getState().stopTimers()
+    }
     let askTop = false, exJustDone = false, workoutDone = false, checked = false
     mutEntry(idx, e => {
       e.sets[i].done = !e.sets[i].done
