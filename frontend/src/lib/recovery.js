@@ -1,33 +1,34 @@
+import { historyUnitCompatible, isWarmupRow } from './workout-model.js'
 import { EXIDX } from './exercises.js'
 import { MUSCLES, musclesOf } from './muscles.js'
-import { isWarmupRow } from './workout-model.js'
+import { adaptive1RMForExercise, E1RM_FULL_RETENTION_MS, E1RM_HALF_LIFE_MS, E1RM_FLOOR } from './onerm.js'
 
+/** Completed-workout window used when calculating current fatigue. */
 // A "normal" hard session for one muscle, in primary-set equivalents. The saturation curve
 // 1 - exp(-stimulus / REF) maps any session size onto [0,1) so volume raises the starting
 // fatigue level without ever pinning it, and the value can then fade asymptotically.
 export const FATIGUE_REF_VOLUME = 2000  // default reference: kg of intensity-weighted volume per session
-export const FATIGUE_MIN_SESSIONS = 3  // smoothing horizon for the causal per-muscle reference
+export const FATIGUE_MIN_SESSIONS = 3  // sessions needed before the reference personalises to the user's own average
 // Computational bound for the stimulus scan, not a semantic cliff: after 30 days (20
 // half-lives) a session contributes below 1e-6 to the accumulated value.
 export const FATIGUE_SCAN_MS = 30 * 24 * 60 * 60 * 1000
 export const BODYWEIGHT_REF_LOAD = 75  // kg assumed for bodyweight exercises when no load is logged
-export const CARDIO_TONNAGE_PER_MIN = 50  // duration proxy for cardio/timed work
-
 // Preserve the shipped set-count signal when a completed custom/imported exercise has no load.
-// Two such sets therefore retain the old 1 - exp(-2 / 3) starting-fatigue reading.
 const ZERO_LOAD_SET_STIMULUS = FATIGUE_REF_VOLUME / 3
+const LB_TO_KG = 0.45359237
+export const CARDIO_TONNAGE_PER_MIN = 50  // duration proxy for cardio/timed work
 
 /** Exponential half-life for fatigue stimulus. */
 export const FATIGUE_HALF_LIFE_MS = 129600000
 
 /** Period after training during which retained strength remains at full value. */
-export const STRENGTH_FULL_MS = 1209600000
+export const STRENGTH_FULL_MS = E1RM_FULL_RETENTION_MS
 
 /** Exponential half-life for retained strength after the full-retention period. */
-export const STRENGTH_HALF_LIFE_MS = 2419200000
+export const STRENGTH_HALF_LIFE_MS = E1RM_HALF_LIFE_MS
 
 /** Minimum retained-strength value for an untrained or fully detrained muscle. */
-export const STRENGTH_FLOOR = 0.5
+export const STRENGTH_FLOOR = E1RM_FLOOR
 
 /**
  * Stable labels for consumer fatigue buckets: values below 0.25 are ready, values from 0.25
@@ -57,8 +58,30 @@ function workoutTimestamp(workout) {
   return Number.isFinite(timestamp) ? timestamp : Number(timestamp)
 }
 
+// Strength retention is a DAY-granular property: a session belongs to the training
+// day it was logged for (its `d`), not the minute the record was created. Imported or
+// late-logged history keeps the honest date this way, so decay can never be reset by
+// an import time or a device clock. Fatigue keeps the precise `start` timestamp.
+function workoutDayTimestamp(workout) {
+  const d = workout?.d
+  if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}/.test(d)) {
+    const day = new Date(d.slice(0, 10) + 'T12:00:00Z').getTime()
+    if (Number.isFinite(day)) return day
+  }
+  return workoutTimestamp(workout)
+}
+
 function emptyMuscleMap(value) {
   return Object.fromEntries(MUSCLES.map(slug => [slug, value]))
+}
+
+function setUnitFor(set, entry, workout) {
+  const u = set?.unit || entry?.unit || entry?.target?.unit || workout?.unit || null
+  return u ? String(u).toLowerCase() : 'kg'
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value))
 }
 
 // Epley one-rep-max estimate, matching onerm.js (REP_CAP included so high-rep sets do not
@@ -67,7 +90,14 @@ function emptyMuscleMap(value) {
 const REP_CAP = 12
 const epley1RM = (load, reps) => load * (1 + Math.min(reps || 1, REP_CAP) / 30)
 
-export const LB_TO_KG = 0.45359237
+// Best recent Epley estimate per exercise, from done sets inside the scan window. A set's
+// intensity (load / its exercise's estimated 1RM) is what defines a hard set: the same
+// tonnage at 90% of your 1RM is far more fatiguing than at 50%, and the estimate is always
+// the user's own, so beginners and experts are treated by the same relative scale.
+// Memoised per (workouts, cutoff): fatigueOf and strengthOf both call it on the same
+// workouts array each 60-second tick, and the map is a pure function of those two inputs.
+
+
 
 function numeric(value) {
   if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null
@@ -140,7 +170,7 @@ function bodyweightConfigured(ex, entry, set, workout, opts = {}) {
   const added = kgOf(set?.w, unitOf(set, entry?.target, entry, workout, opts))
   const hasBodyweightContext = numeric(workout?.bw) !== null
     || numeric(workout?.bodyweight) !== null
-    || numeric(opts.bodyweightKg) !== null
+    || Object.prototype.hasOwnProperty.call(opts, 'bodyweightKg')
     || numeric(opts.bodyweight) !== null
     || hasUnitStamp(set, entry?.target, entry, workout)
   return ex?.eq === 'body weight' && (added === 0 || hasBodyweightContext)
@@ -170,29 +200,6 @@ function session1RMs(workout, opts = {}) {
     }
   }
   return best
-}
-
-// Intensity-weighted tonnage for one completed set: load x reps x (load / exercise 1RM)^1.5.
-// The exponent saturates the "hard set" effect - a set at 90% of your 1RM counts ~0.81 of its
-// raw tonnage, one at 50% only ~0.35. Cardio, timed holds, and sets whose exercise has no
-// 1RM history stay unweighted (duration proxies, or intensity 1 for the first sessions).
-function setTonnage(ex, entry, set, workout, oneRm, opts = {}) {
-  if (ex?.bp === 'cardio') {
-    return Math.max(set?.min || 0, (set?.sec || 0) / 60) * CARDIO_TONNAGE_PER_MIN
-  }
-  if (set?.sec != null && set?.r == null) {
-    return (set.sec / 60) * CARDIO_TONNAGE_PER_MIN
-  }
-  const reps = set?.r || 1
-  const load = loadKgFor(ex, entry, set, workout, opts)
-  const raw = load * reps
-  // A bodyweight target is already an external-load-normalised total (body mass + any added
-  // load). It has no meaningful barbell-style 1RM intensity ratio in the legacy data model, so
-  // retain the monotonic total-load stimulus instead of letting a newly created low 1RM shrink
-  // a weighted bodyweight set below the unloaded version.
-  if (bodyweightConfigured(ex, entry, set, workout, opts)) return raw
-  if (!(oneRm > 0) || !(load > 0)) return raw
-  return raw * Math.min(1, load / oneRm) ** 1.5
 }
 
 // One session's per-muscle stimulus, calculated only from that session. A completed zero-load
@@ -243,7 +250,73 @@ function fatigueStimuli(workouts, current, opts = {}) {
 
 const MUSCLES_BY_SLUG = Object.fromEntries(MUSCLES.map(slug => [slug, true]))
 
-function fatigueValue(events, now) {
+export function sessionEstimates(workouts, now, opts = {}) {
+  const current = Number(now)
+  const out = new Map()
+  for (const workout of workouts || []) {
+    const ts = workoutDayTimestamp(workout)
+    if (!Number.isFinite(ts)) continue
+    const ageMs = Math.max(0, current - ts)
+    for (const entry of workout.entries || []) {
+      let sessionEst = 0
+      for (const set of entry.sets || []) {
+        const ex = EXIDX[entry.id] || entry
+        const isTimedOrNonStrength = set?.mode === 'time' || set?.mode === 'cardio' || set?.sec != null
+          || entry?.mode === 'time' || entry?.mode === 'cardio' || ex?.bp === 'cardio'
+        if (set?.done !== true || !(set?.r > 0) || isWarmupRow(set) || isTimedOrNonStrength) continue
+        const load = loadKgFor(ex, entry, set, workout, opts)
+        if (!(load > 0)) continue
+        const est = epley1RM(load, set.r)
+        if (est > sessionEst) sessionEst = est
+      }
+      if (!(sessionEst > 0)) continue
+      const prev = out.get(entry.id) || { best: 0, bestAt: -Infinity, current: 0 }
+      if (sessionEst > prev.best) { prev.best = sessionEst; prev.bestAt = ts }
+      const retained = ageMs <= STRENGTH_FULL_MS ? 1 : Math.max(STRENGTH_FLOOR, halfLifeDecay(ageMs - STRENGTH_FULL_MS, STRENGTH_HALF_LIFE_MS))
+      const cur = sessionEst * retained
+      if (cur > prev.current) prev.current = cur
+      out.set(entry.id, prev)
+    }
+  }
+  return out
+}
+
+/** Return the canonical Adaptive e1RM for one exercise, or null with no eligible history. */
+export function current1RMForExercise(state, exerciseId, now, expectedUnit = state?.unit) {
+  if (!exerciseId || !Number.isFinite(Number(now))) return null
+  const scoped = state?.unit === expectedUnit || expectedUnit == null
+    ? state
+    : { ...state, unit: expectedUnit }
+  return adaptive1RMForExercise(scoped, exerciseId, Number(now))
+}
+
+// Intensity-weighted tonnage for one completed set: load x reps x (load / exercise 1RM)^1.5.
+// The exponent saturates the "hard set" effect - a set at 90% of your 1RM counts ~0.81 of its
+// raw tonnage, one at 50% only ~0.35. Cardio, timed holds, and sets whose exercise has no
+// 1RM history stay unweighted (duration proxies, or intensity 1 for the first sessions).
+function setTonnage(ex, entry, set, workout, oneRm, opts = {}) {
+  if (ex?.bp === 'cardio') {
+    return Math.max(set?.min || 0, (set?.sec || 0) / 60) * CARDIO_TONNAGE_PER_MIN
+  }
+  if (set?.sec != null && set?.r == null) {
+    return (set.sec / 60) * CARDIO_TONNAGE_PER_MIN
+  }
+  const reps = set?.r || 1
+  const load = loadKgFor(ex, entry, set, workout, opts)
+  const raw = load * reps
+  // A bodyweight target is already an external-load-normalised total (body mass + any added
+  // load). It has no meaningful barbell-style 1RM intensity ratio in the legacy data model, so
+  // retain the monotonic total-load stimulus instead of letting a newly created low 1RM shrink
+  // a weighted bodyweight set below the unloaded version.
+  if (bodyweightConfigured(ex, entry, set, workout, opts)) return raw
+  if (!(oneRm > 0) || !(load > 0)) return raw
+  return raw * Math.min(1, load / oneRm) ** 1.5
+}
+
+// The user's own reference volume for a muscle: the mean per-session tonnage over the scan
+// window (raw session sums, not decayed). With fewer than FATIGUE_MIN_SESSIONS of history the
+// reference stays at FATIGUE_REF_VOLUME so a light or new user still sees a sensible curve.
+function fatigueValue(events, now, refVolume = FATIGUE_REF_VOLUME) {
   if (!events.length) return 0
   events.sort((a, b) => a.timestamp - b.timestamp)
 
@@ -254,7 +327,7 @@ function fatigueValue(events, now) {
     value += event.stimulus
     lastTimestamp = event.timestamp
   }
-  value *= halfLifeDecay(Math.max(0, now - lastTimestamp), FATIGUE_HALF_LIFE_MS)
+  value *= halfLifeDecay(now - lastTimestamp, FATIGUE_HALF_LIFE_MS)
   // Normalise the accumulated stimulus to a saturating fatigue level: more volume starts
   // higher but never pins, and the value fades asymptotically - no window-edge cliff.
   return 1 - Math.exp(-value)
@@ -274,7 +347,6 @@ function fatigueValue(events, now) {
  *
  * @param {Array<object>} workouts Workout history with `start`/`d` and entry set arrays.
  * @param {number} now Current time in milliseconds; injected to keep this function deterministic.
- * @param {{unit?: string}} options Reserved profile-level options; unit is supplied at the UI boundary.
  * @returns {Record<string, number>} Fatigue values keyed by every drawable muscle slug.
  */
 export function fatigueOf(workouts, now, opts = {}) {
@@ -290,19 +362,49 @@ export function fatigueOf(workouts, now, opts = {}) {
  * Calculate retained per-muscle strength from the latest completed stimulus in all history.
  *
  * A muscle with no completed set starts at the 0.5 floor. After a completed set, strength is
- * 1.0 through 14 days old, then decays toward the floor with a 28-day half-life. Any later
- * completed set becomes the new latest stimulus and resets the 14-day full-retention period.
+ * 1.0 through 21 days old, then decays toward the floor with a 60-day half-life. Any later
+ * completed set becomes the new latest stimulus and resets the 21-day full-retention period.
  * The result always contains every drawable muscle slug.
  *
  * @param {Array<object>} workouts Workout history with `start`/`d` and entry set arrays.
  * @param {number} now Current time in milliseconds; injected to keep this function deterministic.
  * @returns {Record<string, number>} Retained-strength values keyed by every drawable muscle slug.
  */
-export function strengthOf(workouts, now, opts = {}) {
+export function strengthOf(workouts, now) {
   const current = Number(now)
+  const result = emptyMuscleMap(STRENGTH_FLOOR)
+  if (!Number.isFinite(current)) return result
+
+  // Intensity-aware path: a muscle's strength is how close the best demonstrated
+  // session (decayed with age) sits to its own all-time best - so training light this
+  // week neither resets nor erases an old PR, and months of light work show the fade.
+  const estimates = sessionEstimates(workouts, current)
+  const intensityCovered = new Set()
+  if (estimates.size) {
+    const byMuscle = Object.fromEntries(MUSCLES.map(slug => [slug, []]))
+    for (const [id, e] of estimates) {
+      const weights = musclesOf(EXIDX[id]) || {}
+      for (const slug of Object.keys(weights)) {
+        if (byMuscle[slug]) byMuscle[slug].push(e)
+      }
+    }
+    for (const slug of MUSCLES) {
+      let ratio = 0
+      for (const e of byMuscle[slug]) {
+        if (e.best > 0) ratio = Math.max(ratio, Math.min(1, e.current / e.best))
+      }
+      // The retention floor inside `current` keeps the ratio in [floor, 1] naturally.
+      if (ratio >= STRENGTH_FLOOR) { result[slug] = ratio; intensityCovered.add(slug) }
+    }
+  }
+
+  // Time-based fallback for muscles whose history has no Epley-estimable work
+  // (timed holds, stretch, cardio-only): the latest-stimulus retention model. The scan is
+  // row-based, not load-gated: a completed zero-load set still counts as the latest stimulus
+  // (owner blocker: strengthOf must not drop ring push-up / bodyweight-only records).
   const latest = Object.fromEntries(MUSCLES.map(slug => [slug, -Infinity]))
   for (const workout of workouts || []) {
-    const timestamp = workoutTimestamp(workout)
+    const timestamp = workoutDayTimestamp(workout)
     if (!Number.isFinite(timestamp)) continue
     for (const entry of workout.entries || []) {
       if (!(entry.sets || []).some(set => set?.done === true && !isWarmupRow(set))) continue
@@ -313,10 +415,8 @@ export function strengthOf(workouts, now, opts = {}) {
       }
     }
   }
-
-  const result = emptyMuscleMap(STRENGTH_FLOOR)
-  if (!Number.isFinite(current)) return result
   for (const slug of MUSCLES) {
+    if (intensityCovered.has(slug)) continue
     const lastTimestamp = latest[slug]
     if (!Number.isFinite(lastTimestamp)) continue
     const age = current - lastTimestamp

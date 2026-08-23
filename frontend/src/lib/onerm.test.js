@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { estimate1RM, bestSetOf, e1rmSeries, best1RM, is1RMRecord, REP_CAP, FORMULAS } from './onerm.js'
+import { estimate1RM, bestSetOf, e1rmSeries, best1RM, is1RMRecord, REP_CAP, FORMULAS, percentage1RMForExercise, percentage1RMDetailsForExercise, normalizePercentageSource, PERCENTAGE_SOURCES, E1RM_FULL_RETENTION_MS, E1RM_HALF_LIFE_MS, E1RM_FLOOR } from './onerm.js'
 
 describe('estimate1RM', () => {
   it('returns the load unchanged for a single rep', () => {
@@ -160,5 +160,87 @@ describe('warm-up sets and 1RM', () => {
     expect(best1RM({ workouts: [{ entries: [ENTRY] }] }, 'warm-test')).toEqual(
       best1RM({ workouts: [{ entries: [working] }] }, 'warm-test'),
     )
+  })
+})
+
+describe('percentage 1RM sources', () => {
+  const state = {
+    unit: 'kg',
+    workouts: [
+      { d: '2026-01-01', unit: 'kg', entries: [{ id: 'bench', target: { mode: 'reps' }, sets: [{ phase: 'work', mode: 'reps', unit: 'kg', w: 120, r: 5, done: true }] }] },
+      { d: '2026-02-01', unit: 'kg', entries: [{ id: 'bench', target: { mode: 'reps' }, sets: [{ phase: 'work', mode: 'reps', unit: 'kg', w: 60, r: 5, done: true }] }] },
+      { d: '2026-03-01', unit: 'kg', entries: [{ id: 'bench', target: { mode: 'reps' }, sets: [{ phase: 'work', mode: 'reps', unit: 'kg', w: 70, r: 5, done: true }] }] },
+      { d: '2026-03-15', unit: 'kg', entries: [{ id: 'bench', target: { mode: 'reps' }, sets: [{ phase: 'work', mode: 'reps', unit: 'kg', w: 80, r: 5, done: true }] }] },
+    ]
+  }
+  const now = Date.parse('2026-04-02T12:00:00Z')
+
+  it('offers exactly Adaptive and Latest session, with legacy values mapping to Adaptive', () => {
+    expect(PERCENTAGE_SOURCES).toEqual(['adaptive', 'latest'])
+    expect(normalizePercentageSource()).toBe('adaptive')
+    expect(normalizePercentageSource('adaptive')).toBe('adaptive')
+    expect(normalizePercentageSource('latest-session')).toBe('latest')
+    expect(normalizePercentageSource('current_1rm_percentage')).toBe('adaptive')
+    expect(normalizePercentageSource('highest')).toBe('adaptive')
+    expect(normalizePercentageSource('average3')).toBe('adaptive')
+  })
+
+  it('uses the median of the latest three session-best estimates for Adaptive', () => {
+    const adaptive = percentage1RMDetailsForExercise(state, 'bench', 'adaptive', { now })
+    expect(adaptive.sessions.map(session => session.est)).toEqual([93.3, 81.7, 70])
+    expect(adaptive.median).toBe(81.7)
+    expect(adaptive.latestDate).toBe('2026-03-15')
+    expect(adaptive.retention).toBe(1)
+    expect(adaptive.estimate).toBe(81.7)
+    expect(percentage1RMForExercise(state, 'bench', 'adaptive', { now })).toBe(81.7)
+  })
+
+  it('uses the latest compatible session without retention decay for Latest session', () => {
+    const latest = percentage1RMDetailsForExercise(state, 'bench', 'latest', { now })
+    expect(latest.estimate).toBe(93.3)
+    expect(latest.sessions).toHaveLength(1)
+    expect(latest.latestDate).toBe('2026-03-15')
+    expect(latest.retention).toBe(1)
+  })
+
+  it('uses the arithmetic midpoint with two sessions and decays Adaptive from the latest date', () => {
+    const twoSessions = {
+      unit: 'kg',
+      workouts: [
+        state.workouts[2],
+        { d: '2026-02-01', unit: 'kg', entries: [{ id: 'bench', target: { mode: 'reps' }, sets: [{ phase: 'work', mode: 'reps', unit: 'kg', w: 60, r: 5, done: true }] }] }
+      ]
+    }
+    const details = percentage1RMDetailsForExercise(twoSessions, 'bench', 'adaptive', { now: Date.parse('2026-04-02T12:00:00Z') })
+    expect(details.median).toBe(75.9)
+    expect(details.retention).toBeCloseTo(0.5 ** ((11 * 24 * 60 * 60 * 1000) / E1RM_HALF_LIFE_MS), 10)
+    expect(details.estimate).toBe(Math.round(details.median * details.retention * 10) / 10)
+    expect(E1RM_FULL_RETENTION_MS).toBe(21 * 24 * 60 * 60 * 1000)
+    expect(E1RM_FLOOR).toBe(0.5)
+  })
+
+  it('selects the newest compatible session by workout date rather than array position', () => {
+    const reversed = { unit: 'kg', workouts: [state.workouts[3], state.workouts[2]] }
+    const latest = percentage1RMDetailsForExercise(reversed, 'bench', 'latest', { now })
+    expect(latest.latestDate).toBe('2026-03-15')
+    expect(latest.estimate).toBe(93.3)
+  })
+
+  it('excludes warm-ups, incomplete, timed, high-rep, wrong-id, and wrong-unit rows', () => {
+    const invalid = {
+      unit: 'kg',
+      workouts: [{ d: '2026-04-01', unit: 'kg', entries: [
+        { id: 'other', target: { mode: 'reps' }, sets: [{ phase: 'work', mode: 'reps', w: 200, r: 5, done: true }] },
+        { id: 'bench', target: { mode: 'time' }, sets: [{ phase: 'work', mode: 'time', w: 200, r: 5, sec: 60, done: true }] },
+        { id: 'bench', target: { mode: 'reps' }, sets: [
+          { phase: 'warmup', mode: 'reps', w: 200, r: 5, done: true },
+          { phase: 'work', mode: 'reps', w: 200, r: 13, done: true },
+          { phase: 'work', mode: 'reps', w: 200, r: 5, done: false },
+          { phase: 'work', mode: 'reps', unit: 'lb', w: 200, r: 5, done: true }
+        ]}
+      ]}]
+    }
+    expect(percentage1RMForExercise(invalid, 'bench', 'adaptive', { now })).toBeNull()
+    expect(percentage1RMForExercise({ unit: 'kg', workouts: [] }, 'bench', 'adaptive', { now })).toBeNull()
   })
 })
