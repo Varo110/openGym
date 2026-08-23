@@ -238,16 +238,65 @@ export function bestWeightFor(S, exId) {
   }))
   return best
 }
-export function effectiveRoutineId(S, iso) {
-  const ov = S.dayPlan[iso]
-  if (ov === 'rest') return null
-  if (ov && S.routines.some(r => r.id === ov)) return ov
+const asRoutineIds = value => Array.isArray(value) ? value : value == null || value === '' ? [] : [value]
+const knownRoutineIds = S => new Set((S?.routines || []).map(r => r.id))
+const validRoutineIds = (S, value) => {
+  const known = knownRoutineIds(S)
+  return [...new Set(asRoutineIds(value).filter(id => id && id !== 'rest' && known.has(id)))]
+}
+
+export function effectiveRoutineIds(S, iso) {
+  const dayPlan = S?.dayPlan || {}
+  const hasOverride = Object.prototype.hasOwnProperty.call(dayPlan, iso)
   const wd = new Date(iso + 'T12:00:00').getDay()
-  return S.week[wd] || null
+  const raw = hasOverride ? dayPlan[iso] : S?.week?.[wd]
+  if (asRoutineIds(raw).includes('rest')) return []
+  const ids = validRoutineIds(S, raw)
+  if (ids.length || !hasOverride || (Array.isArray(raw) && raw.length === 0)) return ids
+  return validRoutineIds(S, S?.week?.[wd])
+}
+
+export function effectiveRoutineId(S, iso) {
+  return effectiveRoutineIds(S, iso)[0] || null
+}
+export function effectiveRoutines(S, iso) {
+  const routines = new Map((S?.routines || []).map(r => [r.id, r]))
+  return effectiveRoutineIds(S, iso).map(id => routines.get(id)).filter(Boolean)
 }
 export function effectiveRoutine(S, iso) {
-  const id = effectiveRoutineId(S, iso)
-  return id ? S.routines.find(r => r.id === id) || null : null
+  return effectiveRoutines(S, iso)[0] || null
+}
+
+// Classic planned sessions are completed by their own routine id. Programme records retain
+// separate queue identity and must not silently settle a weekly slot.
+export function completedRoutineIdsForDate(S, iso) {
+  const done = new Set()
+  ;(S?.workouts || []).forEach(w => {
+    if (String(w?.d || '').slice(0, 10) !== iso || !w?.routineId) return
+    const programmeMarked = w?.programmeSession === true || w?.sessionType === 'programme'
+      || w?.kind === 'programme' || w?.programmeId != null || w?.cycleId != null
+      || w?.programmeInstance != null || w?.programmeStep != null
+    const explicitClassicConversion = w?.classicConversion === true || w?.convertedFromWeek != null
+      || (w?.programmeCreatedFromWeek != null && w?.classic === true)
+    if (programmeMarked && !explicitClassicConversion) return
+    done.add(w.routineId)
+  })
+  return done
+}
+
+export function reconcileStartSessionChoice(todayPlans, doneToday, chosen) {
+  const selectedIsOpen = chosen && todayPlans.some(r => r.id === chosen && !doneToday.has(r.id))
+  if (selectedIsOpen) return chosen
+  return todayPlans.find(r => !doneToday.has(r.id))?.id || null
+}
+
+export function workoutsForUnit(S) {
+  const expected = typeof S?.unit === 'string' ? S.unit.trim().toLowerCase() : ''
+  if (!expected) return (S?.workouts || []).slice()
+  return (S?.workouts || []).filter(workout => {
+    const actual = typeof workout?.unit === 'string' ? workout.unit.trim().toLowerCase() : ''
+    return actual === expected
+  })
 }
 export function buildSets(S, cfg, options = {}) {
   const last = lastEntryFor(S, cfg.id)

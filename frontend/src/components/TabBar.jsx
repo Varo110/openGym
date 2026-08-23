@@ -1,8 +1,10 @@
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useStore } from '../store/useStore.js'
-import { effectiveRoutine } from '../lib/history.js'
+import { useUI } from '../store/useUI.js'
+import { effectiveRoutines } from '../lib/history.js'
 import { todayISO } from '../lib/format.js'
 import { t } from '../lib/i18n.js'
+import { startSessionSheet } from '../sheets.jsx'
 import Icon from './Icon.jsx'
 
 export default function TabBar({ onStart }) {
@@ -17,13 +19,18 @@ export default function TabBar({ onStart }) {
 
   const startWorkout = () => {
     if (!S.active) {
-      const r = effectiveRoutine(S, todayISO())
-      if (r && r.ex.length) { onStart(r.id); return }
+      const plans = effectiveRoutines(S, todayISO())
+      if (plans.length === 1 && plans[0].ex.length) { onStart(plans[0].id); return }
+      if (plans.length > 1) { startSessionSheet(); return }
     }
     nav('/workout')
   }
+  const navigateTab = to => {
+    if (S.active) useUI.getState().stopTimers()
+    nav(to)
+  }
   const Tab = ({ k, icon, to, label }) => (
-    <button className={on(k) ? 'on' : ''} onClick={() => nav(to)}>
+    <button className={on(k) ? 'on' : ''} onClick={() => navigateTab(to)}>
       <Icon name={icon} /><span>{label}</span>
     </button>
   )
