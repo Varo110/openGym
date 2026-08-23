@@ -3,7 +3,10 @@ import { useUI } from '../store/useUI.js'
 import { t } from '../lib/i18n.js'
 import { Button } from './ui.jsx'
 
-const clock = sec => Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0')
+const clock = sec => {
+  const value = Math.max(0, Math.abs(Math.round(sec)))
+  return Math.floor(value / 60) + ':' + String(value % 60).padStart(2, '0')
+}
 
 // One bar, two meanings: the rest countdown between sets, and the work countdown during a
 // timed set (issue #16). They are mutually exclusive by construction — startWork() stops any
@@ -12,7 +15,7 @@ const clock = sec => Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '
 export default function RestTimer() {
   const timer = useUI(s => s.timer)
   const work = useUI(s => s.work)
-  const { addRest, stopRest, finishWorkEarly, stopWork } = useUI()
+  const { addRest, stopRest, finishWorkEarly, stopWork, logWorkWithExtra, logWorkPlanned, workMore } = useUI()
   const on = work || timer
   // The bar is fixed above the tab bar and floats over whatever is beneath it — during a
   // rest that was the next set's row. Extra bottom padding lets the page scroll clear.
@@ -23,6 +26,20 @@ export default function RestTimer() {
   if (!on) return null
   const pct = (on.left / on.total) * 100
 
+  if (work?.done) return (
+    <div id="timer" className="working ready" role="status" aria-live="polite" aria-atomic="true">
+      <div className="head">
+        <div className="t">{t("Time's up!")}{work.left < 0 ? ' +' + clock(-work.left) : ''}</div>
+        {work.label && <div className="lbl">{work.label}</div>}
+        <div className="bar"><i style={{ width: '100%' }} /></div>
+      </div>
+      <div className="acts">
+        <Button size="sm" onClick={() => workMore(15)}>+15s</Button>
+        <Button size="sm" onClick={logWorkPlanned}>{t('Keep {0}s', work.total)}</Button>
+        <Button size="sm" variant="primary" onClick={logWorkWithExtra}>{t('Log {0}s', work.total + Math.max(0, -work.left))}</Button>
+      </div>
+    </div>
+  )
   if (work) return (
     <div id="timer" className="working">
       <div className="t">{clock(work.left)}</div>

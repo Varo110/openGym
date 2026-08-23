@@ -140,22 +140,46 @@ export const useUI = create((set, get) => ({
     workTick = () => {
       const wk = get().work
       if (!wk) return
-      const left = Math.max(0, Math.round((wk.endsAt - Date.now()) / 1000))
+      // Keep counting past the planned end so the user can choose whether to log the
+      // planned duration or the actual duration including overtime.
+      const left = Math.round((wk.endsAt - Date.now()) / 1000)
       if (left === wk.left) return
       const snd = useStore.getState().S.sound
-      if (left <= 0) {
+      if (left <= 0 && !wk.done) {
         beep(snd, 880, 0.15); beep(snd, 880, 0.15, 0.25); beep(snd, 1320, 0.4, 0.5)
         vibrate([200, 100, 200])
-        const done = workDone
-        get().stopWork()
-        if (done) done(wk.total)
+        set({ work: { ...wk, left, done: true } })
         return
       }
-      if (left <= 3) beep(snd, 660, 0.1)
+      if (left <= 3 && left > 0) beep(snd, 660, 0.1)
       set({ work: { ...wk, left } })
     }
     workInt = setInterval(workTick, 1000)
     document.addEventListener('visibilitychange', workTick)
+  },
+  // Add more hold time after the planned duration. The original planned duration and
+  // already-observed overtime remain part of the eventual actual-duration log.
+  workMore(sec = 15) {
+    const wk = get().work
+    const done = workDone
+    if (!wk?.done || !done) return
+    const prior = wk.total + Math.max(0, -wk.left)
+    get().startWork(sec, wk.label, elapsed => done(prior + elapsed))
+  },
+  logWorkWithExtra() {
+    const wk = get().work
+    if (!wk?.done) return
+    const done = workDone
+    const held = wk.total + Math.max(0, -wk.left)
+    get().stopWork()
+    if (done) done(held)
+  },
+  logWorkPlanned() {
+    const wk = get().work
+    if (!wk?.done) return
+    const done = workDone
+    get().stopWork()
+    if (done) done(wk.total)
   },
   // Ended the hold early — log what was actually held.
   finishWorkEarly() {
