@@ -18,6 +18,8 @@ import RestTimer from './components/RestTimer.jsx'
 import Login from './views/Login.jsx'
 import Home from './views/Home.jsx'
 import Plan from './views/Plan.jsx'
+import ProgrammeNew from './views/ProgrammeNew.jsx'
+import ProgrammePickup from './views/ProgrammePickup.jsx'
 import RoutineEdit from './views/RoutineEdit.jsx'
 import Workout from './views/Workout.jsx'
 import Stats from './views/Stats.jsx'
@@ -70,6 +72,8 @@ function Shell() {
             <Routes>
               <Route path="/home" element={<Home />} />
               <Route path="/plan" element={<Plan />} />
+              <Route path="/programme/new" element={<ProgrammeNew />} />
+              <Route path="/programme/pickup" element={<ProgrammePickup />} />
               <Route path="/plan/r/:id" element={<RoutineEdit />} />
               <Route path="/workout" element={<Workout />} />
               <Route path="/stats" element={<Stats />} />
