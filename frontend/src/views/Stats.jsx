@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore } from '../store/useStore.js'
+import { useUI } from '../store/useUI.js'
 import { EXIDX } from '../lib/exercises.js'
-import { lastBW, streakWeeks, setLabel, modeOf, effortOf, metricModeForEntry, metricRowsForEntry, bestWeightForEntry } from '../lib/history.js'
+import { lastBW, streakWeeks, setLabel, modeOf, effortOf, metricModeForEntry, metricRowsForEntry, bestWeightForEntry, volumeByPhase, setsByPhase, workoutVolume } from '../lib/history.js'
 import { fmtNum, fmtDate, fmtVol, todayISO, weekKey } from '../lib/format.js'
 import { t } from '../lib/i18n.js'
 import { bwSheet, goalSheet, calendarSheet, workoutDetailSheet, WorkoutRow, bwDeltaColor } from '../sheets.jsx'
@@ -11,16 +12,20 @@ import Heatmap from '../components/Heatmap.jsx'
 import Icon from '../components/Icon.jsx'
 import BodyMap, { BodyMapLegend } from '../components/BodyMap.jsx'
 import { loadOfWorkouts, rankOf, MUSCLE_NAME, musclesOf } from '../lib/muscles.js'
-import { fatigueOf, strengthOf, STRENGTH_FLOOR, LB_TO_KG } from '../lib/recovery.js'
+import { fatigueOf, strengthOf, STRENGTH_FLOOR } from '../lib/recovery.js'
 import { strengthExerciseRowsForMuscle } from '../lib/strength-exercises.js'
 import { fatigueStateOf } from '../lib/recovery-view.js'
 import { e1rmSeries, best1RM } from '../lib/onerm.js'
+import { strengthExerciseRows } from '../lib/strength-exercises.js'
 import {
   hasEffort, displayScale, scaleName, toScale, avgRir, effortSummary, effortWeeks,
   effortHistogram, isHardSet, HARD_RIR
 } from '../lib/effort.js'
 import { Button, Segmented, SelectRow } from '../components/ui.jsx'
 import { isWarmupRow } from '../lib/workout-model.js'
+import { historyUnitCompatible } from '../lib/workout-model.js'
+import { CompletedProgrammeRow } from '../components/ProgrammeCard.jsx'
+import { completedProgrammeCycles } from '../lib/programmes-ui.js'
 
 // Which muscles the training in a window actually hit — and, the point of the card,
 // which ones it keeps missing. Shading is relative within the window (lib/muscles.js).
@@ -96,7 +101,7 @@ function fatigueLabel(value) {
   return t(state === 'ready' ? 'Ready' : state === 'recovering' ? 'Recovering' : 'Fatigued')
 }
 
-function MuscleBalance({ S }) {
+function MuscleBalance({ S, onExercise }) {
   const [view, setView] = useState('balance')
   const [win, setWin] = useState(7)
   const [hard, setHard] = useState(false)
@@ -109,10 +114,10 @@ function MuscleBalance({ S }) {
     if (!entries.length) return null
     const last = entries.slice().sort((a, b) => String(a.d).localeCompare(String(b.d))).at(-1)
     if (!last || !(last.w > 0)) return null
-    return S.unit === 'lb' ? last.w * LB_TO_KG : last.w
+    return S.unit === 'lb' ? last.w * 0.45359237 : last.w
   }, [S.bodyweight, S.unit])
-  const fatigue = useMemo(() => fatigueOf(workouts, now, { bodyweightKg, unit: S.unit }), [workouts, now, bodyweightKg, S.unit])
-  const strength = useMemo(() => strengthOf(workouts, now, { bodyweightKg, unit: S.unit }), [workouts, now, bodyweightKg, S.unit])
+  const fatigue = useMemo(() => fatigueOf(workouts, now, { bodyweightKg }), [workouts, now, bodyweightKg])
+  const strength = useMemo(() => strengthOf(workouts, now), [workouts, now])
   const muscleExercises = useMemo(() => (sel ? strengthExerciseRowsForMuscle(S, now, sel) : []), [S, now, sel])
   const lastTrained = useMemo(() => latestMuscleTraining(workouts), [workouts])
   const strengthHint = slug => {
@@ -122,9 +127,9 @@ function MuscleBalance({ S }) {
   }
   const toggleSel = m => setSel(s => (s === m ? null : m))
   const inWin = S.workouts.filter(w =>
-    win === 0 ? true
+    historyUnitCompatible(w, S.unit) && (win === 0 ? true
       : win === 7 ? weekKey(w.d) === weekKey(todayISO())
-        : (w.start || new Date(w.d).getTime()) > now - win * 86400000)
+        : (w.start || new Date(w.d).getTime()) > now - win * 86400000))
   // Counting only the sets taken near failure turns the map from "where did the volume go"
   // into "where did the stimulus go" — a muscle can lead on sets and still never be trained
   // hard. Offered only when the window holds ratings at all, since with none the hard map
@@ -132,11 +137,7 @@ function MuscleBalance({ S }) {
   const rated = inWin.some(w => w.entries.some(e => e.sets.some(s => s.done && isHardSet(s))))
   const on = hard && rated
   const load = loadOfWorkouts(inWin, on ? isHardSet : null)
-  const volWin = S.workouts.filter(w => (w.start || new Date(w.d).getTime()) > now - 90 * 86400000)
-  const vol90 = loadOfWorkouts(volWin, null)
   const { worked, missed } = rankOf(load)
-  const { worked: strengthOrder } = rankOf(strength)
-  const detrained = strengthOrder.filter(slug => strength[slug] < 1)
   const top = worked.slice(0, 4)
   const max = worked.length ? load[worked[0]] : 0
   const sets = m => Math.round((load[m] || 0) * 10) / 10
@@ -188,10 +189,12 @@ function MuscleBalance({ S }) {
       <BodyMap className="tappable hm-strength" load={strength} thresholds={STRENGTH_LEVELS} body={S.body} selected={sel} onMuscle={toggleSel} />
       <StrengthLegend />
       <div className="muted small" style={{ marginTop: 10 }}>{t('Strength shows retained muscle strength. Train again to reset it.')}</div>
-      {sel && <>
+
+      {!sel && <div className="muted small" style={{ marginTop: 10 }}>{t('Tap a muscle to see its exercises.')}</div>}
+      {sel ? <>
         <h4 className="sec" style={{ marginTop: 14 }}>{t('Exercises')} · {t(MUSCLE_NAME[sel])}</h4>
         {muscleExercises.length ? muscleExercises.map(row => (
-          <div key={row.id} className="mrow" style={{ minHeight: 48, alignItems: 'stretch' }}>
+          <div key={row.id} className="mrow" style={{ minHeight: 48, alignItems: 'stretch', cursor: 'pointer' }} onClick={() => onExercise && onExercise(row.id)}>
             <span className="nm" style={{ whiteSpace: 'normal', lineHeight: 1.35, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
               <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {row.name}
@@ -199,20 +202,47 @@ function MuscleBalance({ S }) {
                   ? <span className="dim" style={{ fontSize: 11, marginLeft: 6 }}>{t('primary')}</span>
                   : <span className="dim" style={{ fontSize: 11, marginLeft: 6 }}>{t('secondary')}</span>}
               </span>
-              <span className="small dim" style={{ display: 'block', fontWeight: 400 }}>{t('Est. 1RM')}: {fmtNum(row.est)} {S.unit} · {fmtDate(row.estDate, true)}</span>
+              <span className="small dim" style={{ display: 'block', fontWeight: 400 }}>{t('Best historical:')} {fmtNum(row.est)} {S.unit} · {fmtDate(row.estDate, true)}</span>
             </span>
             <span className="bar" style={{ alignSelf: 'center' }}><i style={{ width: '100%', background: 'linear-gradient(to right, var(--acc) ' + Math.round(row.decay * 100) + '%, var(--surface-2) ' + Math.round(row.decay * 100) + '%)' }} /></span>
-            <span className="v" style={{ alignSelf: 'center' }}>{fmtNum(row.current)} {S.unit}<span className="dim"> · {Math.round(row.decay * 100)}%</span></span>
+            <span className="v" style={{ alignSelf: 'center' }}>{fmtNum(row.current)} {S.unit}<span className="dim"> · {t('Adaptive')} {Math.round(row.decay * 100)}%</span></span>
           </div>
         )) : <div className="muted small">{t('No exercises with an estimated 1RM yet.')}</div>}
-      </>}
-      {!sel && <div className="muted small" style={{ marginTop: 10 }}>{t('Tap a muscle to see its exercises.')}</div>}
-      {detrained.map(slug => <div key={slug} className="mrow">
-        <span className="nm">{t(MUSCLE_NAME[slug])}</span>
-        <span className="bar"><i style={{ width: Math.round(strength[slug] * 100) + '%' }} /></span>
-        <span className="v">{t('{0} sets', vol90[slug] || 0)}</span>
-      </div>)}
+      </> : <div className="muted small" style={{ marginTop: 10 }}>{t('Tap a muscle to see its exercises.')}</div>}
     </>}
+  </div>
+}
+
+function WorkoutReview({ S }) {
+  const totals = { warmup: 0, work: 0 }
+  const sets = { warmup: 0, work: 0 }
+  const modes = { reps: 0, time: 0, cardio: 0 }
+  S.workouts.forEach(w => {
+    if (!historyUnitCompatible(w, S.unit)) return
+    const v = volumeByPhase(w, S.unit)
+    const c = setsByPhase(w, S.unit)
+    totals.warmup += v.warmup; totals.work += v.work
+    sets.warmup += c.warmup; sets.work += c.work
+    w.entries.forEach(e => {
+      const mode = metricModeForEntry(e)
+      if (mode) modes[mode]++
+    })
+  })
+  const total = totals.warmup + totals.work
+  return <div className="card">
+    <h2>{t('Training review')} <span className="dim" style={{ textTransform: 'none', letterSpacing: 0 }}>· {t('all logged workouts')}</span></h2>
+    <div className="tiles" style={{ textAlign: 'left', marginBottom: 10 }}>
+      <div className="tile"><div className="l">{t('Total volume')}</div><div className="v" style={{ fontSize: '1.1rem' }}>{fmtVol(total, S.unit)}</div></div>
+      <div className="tile"><div className="l">{t('Work volume')}</div><div className="v" style={{ fontSize: '1.1rem' }}>{fmtVol(totals.work, S.unit)}</div></div>
+      <div className="tile"><div className="l">{t('Warm-up volume')}</div><div className="v" style={{ fontSize: '1.1rem' }}>{fmtVol(totals.warmup, S.unit)}</div></div>
+      <div className="tile"><div className="l">{t('Completed sets')}</div><div className="v" style={{ fontSize: '1.1rem' }}>{sets.warmup + sets.work}</div></div>
+    </div>
+    <div className="small dim">{t('Warm-up volume is included in total volume but does not drive progression or estimated 1RM.')}</div>
+    <div className="mchips" style={{ marginTop: 10 }}>
+      {modes.reps > 0 && <span className="mchip">{t('Repetition entries')}: {modes.reps}</span>}
+      {modes.time > 0 && <span className="mchip">{t('Timed entries')}: {modes.time}</span>}
+      {modes.cardio > 0 && <span className="mchip">{t('Cardio entries')}: {modes.cardio}</span>}
+    </div>
   </div>
 }
 
@@ -272,61 +302,32 @@ function EffortCard({ S }) {
   </div>
 }
 
-// Stats = the analytics hub: all charts, progress and history live here.
-export default function Stats() {
-  const nav = useNavigate()
-  const S = useStore(s => s.S)
-  const [range, setRange] = useState(90)
-  const [exId, setExId] = useState(null)
-  const [exMetric, setExMetric] = useState('top')
-  const now = Date.now()
+// Shared derivation for one exercise's progress section - used by the inline card and by the
+// popup that opens from the strength list, so both always show the same data.
+function exerciseProgressData(S, exId) {
   const kind = displayScale(S)
   const hd = scaleName(kind)
-
-  const bwPts = S.bodyweight.filter(b => range === 0 || (b.t || new Date(b.d).getTime()) > now - range * 86400000)
-    .map(b => ({ t: b.t || new Date(b.d).getTime(), y: b.w, d: b.d }))
-  const bw30 = S.bodyweight.filter(b => (b.t || new Date(b.d).getTime()) > now - 30 * 86400000)
-  const bwDelta30 = bw30.length > 1 ? bw30[bw30.length - 1].w - bw30[0].w : null
-  const workouts = S.workouts
-  const monthW = workouts.filter(w => String(w.d || '').slice(0, 7) === todayISO().slice(0, 7)).length
-
-  const nameOf = id => EXIDX[id]?.n || workouts.flatMap(w => w.entries).find(e => e.id === id)?.n || id
-  const currentOf = id => {
-    for (let i = workouts.length - 1; i >= 0; i--) {
-      const en = workouts[i].entries.find(e => e.id === id)
-      if (!en) continue
-      const mode = metricModeForEntry(en) || modeOf({ id })
-      const rows = metricRowsForEntry(en, mode)
-      const mx = mode === 'reps' ? bestWeightForEntry(en) : Math.max(0, ...rows.map(s => mode === 'cardio' ? (s.speed || 0) : mode === 'time' ? (s.sec || 0) : (s.w || 0)))
-      if (mx > 0) return { mx, unit: mode === 'cardio' ? 'km/h' : mode === 'time' ? 's' : S.unit }
-    }
-    return { mx: 0, unit: S.unit }
-  }
-  const exHist = [...new Set(workouts.flatMap(w => w.entries.map(e => e.id)))].filter(id => EXIDX[id] || nameOf(id) !== id)
-  const exCurrent = Object.fromEntries(exHist.map(id => [id, currentOf(id)]))
-  exHist.sort((a, b) => exCurrent[b].mx - exCurrent[a].mx || nameOf(a).localeCompare(nameOf(b)))
-  const curEx = exId && exHist.includes(exId) ? exId : exHist[0] || null
-  // A completed reps work row is authoritative for strength metrics, even when the parent
-  // target also contains timed/cardio work. Entries without reps rows use their selected mode.
-  const curMode = curEx ? (() => {
-    for (let i = workouts.length - 1; i >= 0; i--) {
-      const en = workouts[i].entries.find(e => e.id === curEx)
-      if (en) {
+  const unitWorkouts = S.workouts.filter(w => historyUnitCompatible(w, S.unit))
+  const unitState = { ...S, workouts: unitWorkouts }
+  const curMode = exId ? (() => {
+    for (let i = unitWorkouts.length - 1; i >= 0; i--) {
+      const entries = (unitWorkouts[i].entries || []).filter(e => e.id === exId)
+      for (let j = entries.length - 1; j >= 0; j--) {
+        const en = entries[j]
         const mode = metricModeForEntry(en)
         if (mode) return mode
       }
     }
-    return modeOf({ id: curEx })
+    return modeOf({ id: exId })
   })() : 'reps'
   const curCardio = curMode === 'cardio'
   const curTimed = curMode === 'time'
   const metric = s => curCardio ? (s.speed || 0) : curTimed ? (s.sec || 0) : (s.w || 0)
   const exUnit = curCardio ? 'km/h' : curTimed ? 's' : S.unit
   let exPts = [], exList = [], exBest = 0
-  if (curEx) {
-    workouts.forEach(w => {
-      const en = w.entries.find(e => e.id === curEx)
-      if (en) {
+  if (exId) {
+    unitWorkouts.forEach(w => {
+      ;(w.entries || []).filter(e => e.id === exId).forEach(en => {
         const loggedMode = metricModeForEntry(en)
         if (loggedMode !== curMode) return
         const doneSets = metricRowsForEntry(en, curMode)
@@ -335,52 +336,144 @@ export default function Stats() {
           exPts.push({ t: w.start, y: mx, d: w.d, sets: doneSets, target: en.target })
           if (mx > exBest) exBest = mx
         }
-      }
+      })
     })
     exList = exPts.slice(-5).reverse()
   }
-  // Estimated 1RM (issue #18) — only reps-mode training produces one, so cardio and timed
-  // work simply have no points and the toggle stays hidden.
-  const e1Pts = curEx && curMode === 'reps' ? e1rmSeries(S, curEx) : []
-  const e1Best = curEx && curMode === 'reps' ? best1RM(S, curEx) : null
+  const e1Pts = exId && curMode === 'reps' ? e1rmSeries(unitState, exId) : []
+  const e1Best = exId && curMode === 'reps' ? best1RM(unitState, exId) : null
   const showE1 = e1Pts.length > 0
-  // Effort on this exercise, per session. It rides on the top-set curve as well as having a
-  // curve of its own, because the two only mean something together: the same weight moved
-  // with more left in the tank is progress a weight-only chart draws as a flat line.
   const exRir = exPts.map(p => avgRir(p.sets))
   const showEff = exRir.filter(v => v != null).length >= 3
   const effPts = exPts.map((p, i) => (exRir[i] == null ? null : { t: p.t, y: toScale(kind, exRir[i]), d: p.d })).filter(Boolean)
-  const onE1 = showE1 && exMetric === 'e1rm'
-  const onEff = showEff && exMetric === 'effort'
   const topPts = exPts.map((p, i) => ({
     t: p.t, y: p.y, d: p.d,
-    // 0 RIR (nothing left) is a full dot, 4+ a faint one; unrated sessions keep the plain line.
     m: exRir[i] == null ? null : 1 - Math.min(4, Math.max(0, exRir[i])) / 4,
     note: exRir[i] == null ? undefined : hd + ' ' + fmtNum(toScale(kind, exRir[i]))
   }))
+  return { curMode, curCardio, curTimed, metric, exUnit, exPts, exList, exBest, e1Pts, e1Best, showE1, showEff, effPts, topPts, hd, kind }
+}
+
+// Exercise-progress bottom sheet - opened from the strength list. A real sheet so
+// swipe-down and the Android back button dismiss it like every other popup.
+function ExerciseProgressSheet({ S, exId, close }) {
+  const PD = exerciseProgressData(S, exId)
+  // Default to the estimated-1RM trend when there is one - that is the long-term
+  // strength picture; Top set stays one tap away.
+  const [popMetric, setPopMetric] = useState(PD.showE1 ? 'e1rm' : 'top')
+  const nameOf = id => EXIDX[id]?.n || S.workouts.flatMap(w => w.entries).find(e => e.id === id)?.n || id
+  // Intensity-aware strength row for this exercise: decayed current 1RM + retention.
+  const srow = (PD.curMode === 'reps' ? strengthExerciseRows(S, Date.now()) : []).find(r => r.id === exId)
+  const latest = PD.showE1 && PD.e1Pts.length ? PD.e1Pts[PD.e1Pts.length - 1] : null
+  const popOpts = [{ value: 'top', label: t('Top set') }]
+  if (PD.showE1) popOpts.push({ value: 'e1rm', label: t('Est. 1RM') })
+  if (PD.showEff) popOpts.push({ value: 'effort', label: t('Effort') })
+  return <>
+    <h3>{nameOf(exId)} <span className="dim" style={{ fontSize: 14, fontWeight: 400 }}>{t('Exercise progress')}</span></h3>
+    {srow && PD.curMode === 'reps' && <div className="row between small" style={{ margin: '2px 0 8px', gap: 8, flexWrap: 'wrap' }}>
+      <span className="dim">{t('Best historical:')} <b className="accent">{fmtNum(srow.est)} {S.unit}</b>
+        {latest ? <> · {t('latest')} {fmtNum(latest.y)} {S.unit} ({fmtDate(latest.d, true)})</> : null}
+      </span>
+      <span className="dim">{t('Adaptive')} <b>{Math.round(srow.decay * 100)}%</b> · {t('current')} <b className="accent">{fmtNum(srow.current)} {S.unit}</b></span>
+    </div>}
+    {popOpts.length > 1 && <Segmented className="seg-range" value={popMetric} onChange={setPopMetric} options={popOpts} />}
+    <div className="chart">
+      {popMetric === 'effort'
+        ? <LineChart points={PD.effPts} h={150} unit={PD.hd} color="var(--yellow)" invert={PD.kind === 'rir'} />
+        : <LineChart points={popMetric === 'e1rm' ? PD.e1Pts.map(p => ({ t: p.t, y: p.y, d: p.d })) : PD.topPts} h={150} unit={PD.exUnit} color="var(--blue)" />}
+    </div>
+    <div style={{ marginTop: 8 }}>{PD.exList.map((p, i) => <div key={i} className="row between small" style={{ padding: '6px 0', borderBottom: 'var(--hair) solid var(--sep)' }}>
+      <span className="muted">{fmtDate(p.d, true)}</span><span>{p.sets.map(sv => setLabel(exId, sv, p.target)).join('  ')}</span></div>)}</div>
+    <div className="small dim" style={{ marginTop: 8 }}>
+      {popMetric === 'effort' ? t('Average effort per workout') : popMetric === 'e1rm' ? t('Estimated 1RM per workout') : PD.curCardio ? t('Top speed per workout') : PD.curTimed ? t('Longest hold per workout') : t('Best set weight per workout')}
+      {popMetric === 'effort' ? '' : <> · {t('Best:')}{' '}<b className="accent">{fmtNum(popMetric === 'e1rm' ? (PD.e1Best ? PD.e1Best.est : 0) : PD.exBest)} {popMetric === 'e1rm' ? S.unit : PD.exUnit}</b></>}
+    </div>
+  </>
+}
+
+// Stats = the analytics hub: all charts, progress and history live here.
+export default function Stats() {
+  const nav = useNavigate()
+  const S = useStore(s => s.S)
+  const [range, setRange] = useState(90)
+  const [exId, setExId] = useState(null)
+  const [exMetric, setExMetric] = useState('top')
+
+  const now = Date.now()
+  const kind = displayScale(S)
+  const hd = scaleName(kind)
+
+  const bwPts = S.bodyweight.filter(b => range === 0 || (b.t || new Date(b.d).getTime()) > now - range * 86400000)
+    .map(b => ({ t: b.t || new Date(b.d).getTime(), y: b.w, d: b.d }))
+  const bw30 = S.bodyweight.filter(b => (b.t || new Date(b.d).getTime()) > now - 30 * 86400000)
+  const bwDelta30 = bw30.length > 1 ? bw30[bw30.length - 1].w - bw30[0].w : null
+  const unitWorkouts = S.workouts.filter(w => historyUnitCompatible(w, S.unit))
+  const unitState = { ...S, workouts: unitWorkouts }
+  const monthW = unitWorkouts.filter(w => String(w.d || '').slice(0, 7) === todayISO().slice(0, 7)).length
+  const completedProgrammes = completedProgrammeCycles(S)
+
+  const nameOf = id => EXIDX[id]?.n || unitWorkouts.flatMap(w => w.entries).find(e => e.id === id)?.n || id
+  const currentOf = id => {
+    for (let i = unitWorkouts.length - 1; i >= 0; i--) {
+      const entries = (unitWorkouts[i].entries || []).filter(e => e.id === id)
+      for (let j = entries.length - 1; j >= 0; j--) {
+        const en = entries[j]
+        const mode = metricModeForEntry(en) || modeOf({ id })
+        const rows = metricRowsForEntry(en, mode)
+        const mx = mode === 'reps' ? bestWeightForEntry(en) : Math.max(0, ...rows.map(s => mode === 'cardio' ? (s.speed || 0) : mode === 'time' ? (s.sec || 0) : (s.w || 0)))
+        if (mx > 0) return { mx, unit: mode === 'cardio' ? 'km/h' : mode === 'time' ? 's' : S.unit }
+      }
+    }
+    return { mx: 0, unit: S.unit }
+  }
+  const exHist = [...new Set(unitWorkouts.flatMap(w => w.entries.map(e => e.id)))].filter(id => EXIDX[id] || nameOf(id) !== id)
+  const exCurrent = Object.fromEntries(exHist.map(id => [id, currentOf(id)]))
+  exHist.sort((a, b) => exCurrent[b].mx - exCurrent[a].mx || nameOf(a).localeCompare(nameOf(b)))
+  const curEx = exId && exHist.includes(exId) ? exId : exHist[0] || null
+  // A completed reps work row is authoritative for strength metrics, even when the parent
+  // target also contains timed/cardio work. Entries without reps rows use their selected mode.
+  const D = exerciseProgressData(S, curEx)
+  const { curMode, curCardio, curTimed, metric, exUnit, exPts, exList, exBest, e1Pts, e1Best, showE1, showEff, effPts, topPts } = D
+  const onE1 = showE1 && exMetric === 'e1rm'
+  const onEff = showEff && exMetric === 'effort'
   const exOpts = [{ value: 'top', label: t('Top set') }]
   if (showE1) exOpts.push({ value: 'e1rm', label: t('Est. 1RM') })
   if (showEff) exOpts.push({ value: 'effort', label: t('Effort') })
+  const [hmMetric, setHmMetric] = useState('time')
 
   return <>
     <div className="hdr"><div><h1>{t('Stats')}</h1><div className="sub">{t('Progress & history')}</div></div>
       <button className="iconbtn" onClick={() => nav('/history')} aria-label={t('History')}><Icon name="history" /></button></div>
 
     <div className="tiles">
-      <div className="tile"><div className="l"><Icon name="dumbbell" />{t('Workouts')}</div><div className="v">{workouts.length}</div></div>
+      <div className="tile"><div className="l"><Icon name="dumbbell" />{t('Workouts')}</div><div className="v">{unitWorkouts.length}</div></div>
       <div className="tile"><div className="l"><Icon name="calendar" />{t('This month')}</div><div className="v">{monthW}</div></div>
-      <div className="tile"><div className="l"><Icon name="flame" />{t('Week streak')}</div><div className="v">{streakWeeks(S)}</div></div>
+      <div className="tile"><div className="l"><Icon name="flame" />{t('Week streak')}</div><div className="v">{streakWeeks(unitState)}</div></div>
       <div className="tile"><div className="l"><Icon name="scale" />{t('Weight 30d')}</div><div className="v" style={{ fontSize: 22, color: bwDelta30 === null ? 'inherit' : bwDeltaColor(bwDelta30, (lastBW(S) || {}).w || 0) }}>{bwDelta30 === null ? '—' : (bwDelta30 > 0 ? '+' : '') + fmtNum(bwDelta30) + ' ' + S.unit}</div></div>
+      <div className="tile"><div className="l"><Icon name="chartLine" />{t('Total volume')}</div><div className="v" style={{ fontSize: 20 }}>{fmtVol(unitWorkouts.reduce((n, w) => n + workoutVolume(w, S.unit), 0), S.unit)}</div></div>
+      </div>
 
+      {completedProgrammes.length > 0 && <section aria-labelledby="completed-programmes-heading">
+      <div className="row between" style={{ marginBottom: 10 }}>
+        <h4 id="completed-programmes-heading" className="sec" style={{ margin: 0 }}>{t('Completed programmes')}</h4>
+        <span className="small dim">{t('Repeat from here')}</span>
+      </div>
+      <div className="list">{completedProgrammes.map(cycle => <CompletedProgrammeRow key={cycle.id} cycle={cycle} state={S}
+        onRepeat={item => nav('/programme/pickup', { state: { programmeId: item.programmeId, cycleId: item.id, mode: 'repeat' } })} />)}</div>
+      </section>}
+
+      <div className="card">
+      <h2>{t('Activity — last 12 months')} <span className="dim" style={{ textTransform: 'none', letterSpacing: 0 }}>· {t(hmMetric === 'vol' ? 'by volume' : 'by time trained')}</span></h2>
+      <div className="chips" style={{ marginBottom: 8 }}>
+        <button className={'chip nocap' + (hmMetric === 'time' ? ' on' : '')} onClick={() => setHmMetric('time')}>{t('Time')}</button>
+        <button className={'chip nocap' + (hmMetric === 'vol' ? ' on' : '')} onClick={() => setHmMetric('vol')}>{t('Volume')}</button>
+      </div>
+      <Heatmap S={unitState} metric={hmMetric} onDay={iso => { const ws = unitWorkouts.filter(w => w.d === iso); if (ws.length === 1) workoutDetailSheet(ws[0]); else if (ws.length) calendarSheet(iso) }} />
     </div>
 
-    <div className="card">
-      <h2>{t('Activity — last 12 months')} <span className="dim" style={{ textTransform: 'none', letterSpacing: 0 }}>· {t('by time trained')}</span></h2>
-      <Heatmap S={S} onDay={iso => { const ws = workouts.filter(w => w.d === iso); if (ws.length === 1) workoutDetailSheet(ws[0]); else if (ws.length) calendarSheet(iso) }} />
-    </div>
-
-    {workouts.length > 0 && <MuscleBalance S={S} />}
-    {hasEffort(S) && <EffortCard S={S} />}
+    {unitWorkouts.length > 0 && <MuscleBalance S={unitState} onExercise={id => useUI.getState().openSheet(close => <ExerciseProgressSheet S={unitState} exId={id} close={close} />)} />}
+    {hasEffort(unitState) && <EffortCard S={unitState} />}
+    {unitWorkouts.length > 0 && <WorkoutReview S={unitState} />}
 
     <div className="cols">
       <div className="card">
@@ -425,12 +518,12 @@ export default function Stats() {
       </div>
     </div>
 
-    {workouts.length > 0 && <>
+    {unitWorkouts.length > 0 && <>
       <div className="row between" style={{ marginBottom: 10 }}>
         <h4 className="sec" style={{ margin: 0 }}>{t('Recent workouts')}</h4>
-        <Button size="sm" variant="ghost" trailingIcon="chevronRight" onClick={() => nav('/history')}>{t('All')} {workouts.length}</Button>
+        <Button size="sm" variant="ghost" trailingIcon="chevronRight" onClick={() => nav('/history')}>{t('All')} {unitWorkouts.length}</Button>
       </div>
-      <div className="list">{[...workouts].reverse().slice(0, 6).map(w => <WorkoutRow key={w.id} w={w} onClick={() => workoutDetailSheet(w)} />)}</div>
+      <div className="list">{[...unitWorkouts].reverse().slice(0, 6).map(w => <WorkoutRow key={w.id} w={w} onClick={() => workoutDetailSheet(w)} />)}</div>
     </>}
   </>
 }

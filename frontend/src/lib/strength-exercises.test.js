@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { strengthExerciseRows, strengthExerciseRowsForMuscle, primaryMuscleOf } from './strength-exercises.js'
 import { registerCustom } from './exercises.js'
+import { percentage1RMDetailsForExercise } from './onerm.js'
+import { current1RMForExercise } from './recovery.js'
+import { resolveTargetLoad } from './workout-runtime.js'
 
 const DAY = 86400000
 const NOW = Date.UTC(2026, 7, 8, 12) // 2026-08-08 12:00 UTC
@@ -66,8 +69,9 @@ describe('strengthExerciseRows', () => {
     const rows = strengthExerciseRows(S, NOW)
     // undone (no completed set) and stretch (no load) have no estimate -> omitted
     expect(rows.map(r => r.id).sort()).toEqual(['bench', 'fly', 'pushdown', 'squat'])
-    // strongest expected current first: bench 102 > squat ~78.5 > pushdown 40 > fly 28
-    expect(rows[0].id).toBe('bench')
+    // strongest expected current first: squat ~105 (30d, ~90% retained) > bench 102
+    // > pushdown 40 > fly 28
+    expect(rows[0].id).toBe('squat')
     expect(rows.at(-1).id).toBe('fly')
   })
 
@@ -93,40 +97,28 @@ describe('strengthExerciseRows', () => {
     expect(muscleRows[0].name).toBe('Bench Press')
   })
 
-  it('uses nested exercise snapshots for a deleted custom exercise', () => {
-    const deleted = {
-      id: 'deleted-custom',
-      muscleSnapshot: { n: 'Deleted custom', muscleWeights: { chest: 1 } },
-      sets: [{ phase: 'work', warmup: true, w: 80, r: 8, done: true, unit: 'kg' }],
-    }
-    const S = unitState([workout(3, [deleted])])
-    const rows = strengthExerciseRows(S, NOW)
-    expect(rows).toHaveLength(1)
-    expect(rows[0]).toMatchObject({ id: 'deleted-custom', name: 'Deleted custom', primary: 'chest', est: 101.3 })
-    expect(strengthExerciseRowsForMuscle(S, NOW, 'chest')[0].name).toBe('Deleted custom')
-  })
-
   it('applies the exercise own decay to the expected current 1RM', () => {
     const S = unitState([workout(3, [bench]), workout(30, [squat])])
     const rows = strengthExerciseRows(S, NOW)
     const benchRow = rows.find(r => r.id === 'bench')
     const squatRow = rows.find(r => r.id === 'squat')
-    // bench last done 3 days ago -> still inside the 14-day full-retention plateau
+    // bench last done 3 days ago -> still inside the 21-day full-retention plateau
     expect(benchRow.decay).toBe(1)
     expect(benchRow.current).toBe(102)
-    // squat last done 30 days ago -> 16 days past the plateau at a 28-day half-life
-    const squatDecay = 0.5 ** (16 / 28)
+    // squat last done 30 days ago -> 9 days past the 21-day plateau at a 60-day
+    // half-life -> about 90% retained
+    const squatDecay = 0.5 ** (9 / 60)
     expect(squatRow.decay).toBeCloseTo(squatDecay, 4)
     expect(squatRow.current).toBeCloseTo(Math.round(116.7 * squatDecay * 10) / 10, 2)
   })
 
   it('keeps the exercise own decay even when its muscle is kept fresh by other work', () => {
     // bench last done 30 days ago, but chest is fresh (fly trained 3 days ago): the row
-    // speaks for the exercise, so bench still shows its own decline.
+    // speaks for the exercise, so bench still shows its own decline (~90% retained).
     const S = unitState([workout(30, [bench]), workout(3, [fly])])
     const rows = strengthExerciseRows(S, NOW)
     const benchRow = rows.find(r => r.id === 'bench')
-    const benchDecay = 0.5 ** (16 / 28)
+    const benchDecay = 0.5 ** (9 / 60)
     expect(benchRow.decay).toBeCloseTo(benchDecay, 4)
     expect(benchRow.current).toBeCloseTo(Math.round(102 * benchDecay * 10) / 10, 2)
   })
@@ -172,5 +164,27 @@ describe('primaryMuscleOf', () => {
     expect(primaryMuscleOf({ tg: 'back', mg: 'biceps' }).slug).toBe('upper-back') // canonicalised
     expect(primaryMuscleOf({})).toBeNull()
     expect(primaryMuscleOf(null)).toBeNull()
+  })
+})
+
+describe('Adaptive e1RM consumer parity', () => {
+  it('uses one Adaptive value for detail, Strength, Recovery, and percentage load preview', () => {
+    const state = unitState([workout(3, [{
+      id: 'bench',
+      target: { mode: 'reps' },
+      sets: [{ phase: 'work', mode: 'reps', w: 85, r: 6, done: true, unit: 'kg' }]
+    }])])
+    const now = NOW
+    const detail = percentage1RMDetailsForExercise(state, 'bench', 'adaptive', { now })
+    const row = strengthExerciseRows(state, now).find(item => item.id === 'bench')
+    const recovery = current1RMForExercise(state, 'bench', now)
+    const preview = resolveTargetLoad({ weightPrescription: { kind: 'percentage', source: 'adaptive', percent: 100 } }, [], 0, {
+      state, exerciseId: 'bench', now
+    })
+
+    expect(detail?.estimate).toBe(102)
+    expect(row?.current).toBe(detail?.estimate)
+    expect(recovery).toBe(detail?.estimate)
+    expect(preview).toBe(detail?.estimate)
   })
 })

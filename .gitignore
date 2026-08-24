@@ -5,6 +5,14 @@ media/gif/
 # Runtime data — users, passkeys, per-user state, session secret
 data/
 
+# Deployment/restore material is always kept outside the checkout.  Do not commit
+# credentials, account databases, or any other backup copies here.
+.pre-deploy-backup/
+*.bak
+*.bak-*
+*.backup
+*.premerge.*
+
 # Local config
 .env
 
@@ -13,4 +21,6 @@ frontend/dist/
 node_modules/
 *.log
 .DS_Store
-node_modules
+
+# Private programme source documents are mounted at runtime, never committed
+Exercise_PDFs/

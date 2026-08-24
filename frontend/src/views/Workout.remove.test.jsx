@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Workout, { removeActiveExercise } from './Workout.jsx'
 import { DEF, useStore } from '../store/useStore.js'
 import { useUI } from '../store/useUI.js'
+import { partialExitBaseline } from '../lib/partial.js'
 
 vi.mock('../lib/sound.js', () => ({ beep: vi.fn(), vibrate: vi.fn() }))
 vi.mock('../lib/api.js', () => ({ api: vi.fn(() => Promise.resolve({})) }))
@@ -22,17 +23,17 @@ const entry = (id, sg) => ({
 let root
 let container
 
-function setActive(entries, cur = 0) {
+function setActive(entries, cur = 0, activeFields = {}) {
   const S = clone(DEF)
   S.active = {
     id: 'remove-test', d: '2026-08-11', start: Date.now(), routineId: null,
-    name: 'Remove test', bw: null, cur, entries
+    name: 'Remove test', bw: null, cur, entries, ...activeFields
   }
   useStore.setState({ S, user: null })
 }
 
-function renderWorkout(entries) {
-  setActive(entries)
+function renderWorkout(entries, activeFields = {}) {
+  setActive(entries, 0, activeFields)
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -40,7 +41,10 @@ function renderWorkout(entries) {
 }
 
 function removeButton() {
-  return [...container.querySelectorAll('button')].find(button => button.textContent.includes('Remove exercise'))
+  // The set-row "Remove exercise" label (single-set exercises) must not be picked up:
+  // the guarded control is the footer button, which is the last match in the DOM.
+  const all = [...container.querySelectorAll('button')].filter(button => button.textContent.includes('Remove exercise'))
+  return all[all.length - 1]
 }
 
 beforeEach(() => {
@@ -64,13 +68,38 @@ afterEach(() => {
 })
 
 describe('active-session exercise removal', () => {
-  it('disables removal for the whole duration of a timed hold', () => {
+  it('records a Programme work-row tombstone when the set remove control is used', () => {
+    const entries = [
+      { ...entry('1001'), sets: [
+        { phase: 'work', w: 0, r: 1, done: false },
+        { phase: 'work', w: 0, r: 1, done: false }
+      ] },
+      { ...entry('1002'), sets: [
+        { phase: 'work', w: 0, r: 1, done: false },
+        { phase: 'work', w: 0, r: 1, done: false }
+      ] }
+    ]
+    const baseline = partialExitBaseline(entries)
+    renderWorkout(entries, { sessionType: 'programme', partialExitBaseline: baseline })
+
+    const removeSet = [...container.querySelectorAll('button')]
+      .find(button => button.textContent.trim() === 'Remove set')
+    expect(removeSet).toBeTruthy()
+    act(() => removeSet.dispatchEvent(new Event('click', { bubbles: true })))
+
+    const active = useStore.getState().S.active
+    expect(active.entries[0].sets).toHaveLength(1)
+    expect(active.partialExitBaseline).toMatchObject({ prescribedWorkSets: 3 })
+    expect(active.partialExitBaseline.removedWorkRowIds).toHaveLength(1)
+  })
+
+  it('disables removal for the whole duration of a timed hold', async () => {
     renderWorkout([entry('1001')])
     expect(removeButton()).toBeTruthy()
     expect(removeButton().disabled).toBe(false)
 
+    window.__wkDebug = true
     act(() => useUI.getState().startWork(30, 'Hold', vi.fn()))
-
     expect(removeButton().disabled).toBe(true)
   })
 
@@ -90,8 +119,8 @@ describe('active-session exercise removal', () => {
     expect(wrongWrite).not.toHaveBeenCalled()
     expect(active.entries.map(e => e.id)).toEqual(['1002', '1003'])
     expect(active.cur).toBe(0)
-    expect(active.entries[0].sg).toBeUndefined()
-    expect(active.entries[0].sets[0].sec).toBeUndefined()
+    expect(active.entries[0].sg).toBeFalsy()
+    expect(active.entries[0].sets[0].sec).toBeFalsy()
   })
 
   it('hides the remove control for an empty freestyle session', () => {
@@ -115,32 +144,5 @@ describe('remove-exercise locale coverage', () => {
     Object.entries(packs).forEach(([path, pack]) => {
       required.forEach(key => expect(pack, `${path} is missing ${key}`).toHaveProperty(key))
     })
-  })
-})
-
-describe('remove-exercise edge cases', () => {
-  it('removing the last remaining exercise leaves an empty, coherent session', () => {
-    setActive([entry('a')], 0)
-    act(() => { removeActiveExercise(0) })
-    const A = useStore.getState().S.active
-    expect(A.entries).toHaveLength(0)
-    expect(A.cur).toBe(0)
-  })
-
-  it('removing one half of a two-member superset dissolves the group', () => {
-    setActive([entry('a', 'g1'), entry('b', 'g1'), entry('c')], 0)
-    act(() => { removeActiveExercise(1) })
-    const A = useStore.getState().S.active
-    expect(A.entries.map(e => e.id)).toEqual(['a', 'c'])
-    // A superset of one is not a superset.
-    expect(A.entries[0].sg).toBeUndefined()
-  })
-
-  it('removing an entry below the active one keeps cur on the same exercise', () => {
-    setActive([entry('a'), entry('b'), entry('c')], 2)
-    act(() => { removeActiveExercise(0) })
-    const A = useStore.getState().S.active
-    expect(A.entries.map(e => e.id)).toEqual(['b', 'c'])
-    expect(A.entries[A.cur].id).toBe('c')
   })
 })

@@ -1,7 +1,4 @@
-// The demo build is the only openGym most people ever see, so its seeded history has to
-// exercise the stats it is there to show off — including the effort card, which renders as
-// dashes on a history that is rated too thinly or not at all.
-import { describe, it, expect } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { buildDemoState } from './demoSeed.js'
 import {
   effortSummary, effortWeeks, effortHistogram, hasEffort, displayScale, avgRir,
@@ -9,6 +6,31 @@ import {
 } from './effort.js'
 import { effortOf, modeOf } from './history.js'
 
+describe('demo seeded weighted history', () => {
+  it('stamps kilograms on workouts and every positive weighted history record', () => {
+    const state = buildDemoState()
+    const weightedWorkouts = state.workouts.filter(workout =>
+      workout.entries.some(entry => entry.sets.some(set => set.w > 0))
+    )
+
+    expect(state.workouts.length).toBeGreaterThan(0)
+    expect(weightedWorkouts.length).toBeGreaterThan(0)
+    expect(state.workouts.every(workout => workout.unit === 'kg')).toBe(true)
+
+    weightedWorkouts.forEach(workout => {
+      workout.entries
+        .filter(entry => entry.sets.some(set => set.w > 0))
+        .forEach(entry => {
+          expect(entry.unit).toBe('kg')
+          entry.sets.filter(set => set.w > 0).forEach(set => expect(set.unit).toBe('kg'))
+        })
+    })
+  })
+})
+
+// The demo build is the only openGym most people ever see, so its seeded history has to
+// exercise the stats it is there to show off — including the effort card, which renders as
+// dashes on a history that is rated too thinly or not at all.
 const S = buildDemoState()
 const eachSet = fn => S.workouts.forEach(w => w.entries.forEach(e => e.sets.forEach(s => fn(s, w, e))))
 const sum = effortSummary(S, 0)   // 0 = the whole history

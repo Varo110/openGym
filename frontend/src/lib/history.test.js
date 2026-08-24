@@ -1,13 +1,113 @@
 import { describe, it, expect } from 'vitest'
-import { modeOf, isTimed, fmtSec, setLabel, defaultConfig, buildSets, freestyleConfig, exLine, workoutVolume, bestWeightFor, bestWeightForEntry, effortOf, stepEffort, capEffort, isBw, isPerSide, sideReps, repStep, cascadeWeight, insertWarmupRow, removeRowAt, workSetsDone, pairAdjacent, unpairSuperset, supersetUnits } from './history.js'
+import { modeOf, isTimed, fmtSec, setLabel, defaultConfig, buildSets, exLine, workoutVolume, volumeByPhase, setsByPhase, lastEntryFor, lastPerformancesFor, lastSetupFor, bestWeightFor, bestWeightForEntry, metricModeForEntry, metricRowsForEntry, workoutsForUnit, effortOf, stepEffort, capEffort, isBw, isPerSide, sideReps, repStep, activeWorkoutHistoryPolicy, activeWorkoutHistoryState, activeWorkoutLoadReference, pairAdjacent, unpairSuperset, supersetUnits, workSetsDone, cascadeWeight, completedRoutineIdsForDate, reconcileStartSessionChoice, weeklySessionStatus } from './history.js'
 import { EXDB } from './exercises.js'
+import { historyUnitCompatible } from './workout-model.js'
+import { normalizeState } from './state.js'
 
 // Real ids out of the shipped catalogue, so the body-part fallback is exercised for real.
 const CARDIO = EXDB.find(e => e.bp === 'cardio').id
 // A *loaded* lift: the catalogue's first non-cardio entry is a sit-up, which since issue #32
 // defaults to bodyweight and would quietly send every label test down the other path.
 const LIFT = EXDB.find(e => e.bp !== 'cardio' && e.eq !== 'body weight').id
+const OTHER_LIFT = EXDB.find(e => e.bp !== 'cardio' && e.eq !== 'body weight' && e.id !== LIFT).id
 const BW = EXDB.find(e => e.eq === 'body weight').id
+
+describe('universal last performance history', () => {
+  it('keeps exact occurrence, mode, unit, completion, ordering, and safe derived fields', () => {
+    const entry = (occurrenceId, w, r, done = true) => ({
+      id: LIFT, occurrenceId, target: { mode: 'reps', notes: 'private target note' },
+      notes: 'private entry note', sets: [{ phase: 'work', mode: 'reps', unit: 'kg', w, r, done }]
+    })
+    const state = {
+      unit: 'kg',
+      workouts: [
+        { d: '2026-01-01', unit: 'kg', entries: [entry('pair-a', 60, 5), entry('pair-b', 100, 5)] },
+        { d: '2026-01-02', unit: 'lb', entries: [entry('pair-a', 90, 5)] },
+        { d: '2026-01-03', unit: 'kg', entries: [entry('pair-a', 70, 5, false)] },
+        { d: '2026-01-04', unit: 'kg', entries: [entry('pair-a', 65, 6)] },
+        { d: '2026-01-05', unit: 'kg', entries: [entry('pair-a', 67.5, 6)] },
+        { d: '2026-01-06', unit: 'kg', entries: [entry('pair-a', 70, 6)] },
+        { d: '2026-01-07', unit: 'kg', entries: [entry('pair-a', 72.5, 6)] },
+      ]
+    }
+
+    const performances = lastPerformancesFor(state, LIFT, 'reps', 'pair-a')
+
+    expect(performances.map(item => item.date)).toEqual(['2026-01-07', '2026-01-06', '2026-01-05'])
+    expect(performances.every(item => item.mode === 'reps' && item.sets.every(set => set.mode === 'reps' && set.unit === 'kg'))).toBe(true)
+    expect(performances[0].sets).toEqual([{ phase: 'work', mode: 'reps', unit: 'kg', w: 72.5, r: 6, done: true }])
+    expect(performances[0]).not.toHaveProperty('notes')
+    expect(performances[0]).not.toHaveProperty('target')
+  })
+
+  it('does not mix timed or cardio rows into reps performance history', () => {
+    const state = {
+      unit: 'kg',
+      workouts: [
+        { d: '2026-02-01', unit: 'kg', entries: [{ id: LIFT, target: { mode: 'time' }, sets: [{ mode: 'time', unit: 'kg', sec: 60, w: 20, done: true }] }] },
+        { d: '2026-02-02', unit: 'kg', entries: [{ id: LIFT, target: { mode: 'reps' }, sets: [{ mode: 'reps', unit: 'kg', w: 60, r: 5, done: true }] }] },
+      ]
+    }
+    expect(lastPerformancesFor(state, LIFT, 'reps').map(item => item.date)).toEqual(['2026-02-02'])
+    expect(lastPerformancesFor(state, LIFT, 'time').map(item => item.date)).toEqual(['2026-02-01'])
+  })
+})
+
+describe('superset editing', () => {
+  it('pairs adjacent entries without mutating the source and keeps the display units contiguous', () => {
+    const entries = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
+
+    const paired = pairAdjacent(entries, 1, 2, 'sg-new')
+
+    expect(paired).toEqual([{ id: 'a' }, { id: 'b', sg: 'sg-new' }, { id: 'c', sg: 'sg-new' }])
+    expect(entries).toEqual([{ id: 'a' }, { id: 'b' }, { id: 'c' }])
+    expect(supersetUnits(paired)).toEqual([[0], [1, 2]])
+  })
+
+  it('keeps native four- and five-component complexes as indivisible adjacent display units', () => {
+    const entries = [
+      { id: 'snatch-grip-rdl', sg: 'snatch' }, { id: 'snatch-high-pull', sg: 'snatch' },
+      { id: 'muscle-snatch', sg: 'snatch' }, { id: 'overhead-squat', sg: 'snatch' },
+      { id: 'between' },
+      { id: 'clean-deadlift', sg: 'clean' }, { id: 'clean-high-pull', sg: 'clean' },
+      { id: 'tall-clean', sg: 'clean' }, { id: 'front-squat', sg: 'clean' }, { id: 'push-press', sg: 'clean' },
+    ]
+
+    expect(supersetUnits(entries)).toEqual([[0, 1, 2, 3], [4], [5, 6, 7, 8, 9]])
+  })
+
+  it('merges both contiguous groups when their boundary entries are paired', () => {
+    const entries = [
+      { id: 'a', sg: 'left' }, { id: 'b', sg: 'left' },
+      { id: 'c', sg: 'right' }, { id: 'd', sg: 'right' }
+    ]
+
+    const merged = pairAdjacent(entries, 1, 2)
+
+    expect(merged.map(e => e.sg)).toEqual(['left', 'left', 'left', 'left'])
+    expect(entries.map(e => e.sg)).toEqual(['left', 'left', 'right', 'right'])
+  })
+
+  it('unpairs one entry and removes sg values left without an adjacent partner', () => {
+    const entries = [
+      { id: 'a', sg: 'group' }, { id: 'b', sg: 'group' }, { id: 'c', sg: 'group' },
+      { id: 'd', sg: 'orphan' }
+    ]
+
+    const unpaired = unpairSuperset(entries, 1)
+
+    expect(unpaired).toEqual([{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }])
+    expect(entries.map(e => e.sg)).toEqual(['group', 'group', 'group', 'orphan'])
+  })
+
+  it('rejects a non-adjacent pairing request', () => {
+    const entries = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
+
+    expect(() => pairAdjacent(entries, 0, 2, 'sg-invalid')).toThrow(/adjacent/)
+    expect(entries).toEqual([{ id: 'a' }, { id: 'b' }, { id: 'c' }])
+  })
+})
+
 
 describe('modeOf', () => {
   it('falls back to the body part when a plan has no mode — every existing plan keeps working', () => {
@@ -28,6 +128,11 @@ describe('modeOf', () => {
   it('ignores a mode it does not know rather than trusting a bad file', () => {
     expect(modeOf({ id: LIFT, mode: 'nonsense' })).toBe('reps')
     expect(modeOf({ id: CARDIO, mode: '' })).toBe('cardio')
+  })
+
+  it('recognises legacy timed/cardio fields when an explicit mode was not persisted', () => {
+    expect(modeOf({ id: LIFT, sec: 60 })).toBe('time')
+    expect(modeOf({ id: LIFT, min: 20, speed: 9 })).toBe('cardio')
   })
 
   it('exposes the timed check', () => {
@@ -67,6 +172,12 @@ describe('setLabel', () => {
     expect(setLabel(CARDIO, {})).toBe('0 min @ 0 km/h')
   })
 
+  it('uses row-specific modes when warm-up and work modes are mixed', () => {
+    expect(setLabel(LIFT, { phase: 'warmup', mode: 'reps', w: 20, r: 8 }, { mode: 'time', sec: 45 }))
+      .toBe('20×8')
+    expect(setLabel(LIFT, { phase: 'work', mode: 'time', sec: 45, w: 20 }, { mode: 'reps', reps: 5 }))
+      .toBe('0:45 · 20')
+  })
   it('appends RIR when present, including a valid 0', () => {
     expect(setLabel(LIFT, { w: 60, r: 10, rir: 2 })).toBe('60×10 (RIR 2)')
     expect(setLabel(LIFT, { w: 60, r: 10, rir: 1.5 })).toBe('60×10 (RIR 1.5)')
@@ -336,77 +447,406 @@ describe('exLine', () => {
 
 const emptyS = { workouts: [], exWeights: {} }
 
-describe('freestyleConfig', () => {
-  it('inherits the last target and completed set count for a newly added exercise', () => {
-    const S = {
-      exWeights: {},
+describe('active workout history policy', () => {
+  const selected = {
+    id: 'selected-workout', d: '2026-01-01', unit: 'kg', entries: [{
+      id: LIFT,
+      target: { mode: 'reps', sets: 2, reps: 5, weight: 60, unit: 'kg' },
+      sets: [
+        { phase: 'work', mode: 'reps', unit: 'kg', w: 60, r: 5, done: true },
+        { phase: 'work', mode: 'reps', unit: 'kg', w: 62.5, r: 4, done: true }
+      ]
+    }]
+  }
+
+  it('gives fresh freestyle no workout or exWeights history at all', () => {
+    const state = {
+      unit: 'kg',
+      exWeights: { [LIFT]: { w: 100, unit: 'kg' } },
+      workouts: [selected]
+    }
+    const scoped = activeWorkoutHistoryState(state, {
+      routineId: null,
+      historyPolicy: { kind: 'fresh-freestyle' }
+    })
+
+    expect(scoped.workouts).toEqual([])
+    expect(scoped.exWeights).toEqual({})
+    expect(lastEntryFor(scoped, LIFT, 'reps')).toBeNull()
+    expect(buildSets(scoped, { id: LIFT, mode: 'reps', sets: 1, reps: 10, weight: 0 }))
+      .toEqual([{ w: 0, r: 10, done: false }])
+  })
+
+  it('gives repeated freestyle the selected workout only, never newer global history', () => {
+    const newer = {
+      ...selected,
+      id: 'newer-workout', d: '2026-01-02',
+      entries: [{ ...selected.entries[0], target: { ...selected.entries[0].target, reps: 8, weight: 100 }, sets: [
+        { phase: 'work', mode: 'reps', unit: 'kg', w: 100, r: 8, done: true }
+      ] }]
+    }
+    const state = {
+      unit: 'kg',
+      exWeights: { [LIFT]: { w: 120, unit: 'kg' } },
+      workouts: [selected, newer]
+    }
+    const scoped = activeWorkoutHistoryState(state, {
+      routineId: null,
+      historyPolicy: { kind: 'selected-freestyle', workout: selected }
+    })
+
+    expect(scoped.workouts).toEqual([selected])
+    expect(scoped.exWeights).toEqual({})
+    expect(lastEntryFor(scoped, LIFT, 'reps')).toMatchObject({ d: '2026-01-01', sets: [{ w: 60 }, { w: 62.5 }] })
+    expect(buildSets(scoped, { id: LIFT, mode: 'reps', sets: 2, reps: 5, weight: 0 }))
+      .toEqual([{ w: 60, r: 5, done: false }, { w: 62.5, r: 4, done: false }])
+  })
+
+  it('leaves routine and programme sessions on the global history policy', () => {
+    const state = { unit: 'kg', exWeights: { [LIFT]: { w: 100, unit: 'kg' } }, workouts: [selected] }
+    expect(activeWorkoutHistoryPolicy({ routineId: 'push' })).toBe('global')
+    expect(activeWorkoutHistoryPolicy({ routineId: null, sessionType: 'programme', programmeId: 'p' })).toBe('global')
+    expect(activeWorkoutHistoryState(state, { routineId: 'push' })).toBe(state)
+    expect(activeWorkoutHistoryState(state, { routineId: null, sessionType: 'programme', programmeId: 'p' })).toBe(state)
+  })
+
+  it.each([
+    ['sessionType', { sessionType: 'programme' }],
+    ['kind', { kind: 'programme' }],
+    ['programmeSession', { programmeSession: true }],
+    ['programmeId', { programmeId: 'programme-1' }],
+    ['programme', { programme: { id: 'programme-1' } }],
+    ['cycleId', { cycleId: 'cycle-1' }],
+    ['cycle', { cycle: { id: 'cycle-1' } }]
+  ])('classifies a legacy Programme marker (%s) as global even without a routine id', (_label, marker) => {
+    expect(activeWorkoutHistoryPolicy({ routineId: null, ...marker })).toBe('global')
+  })
+
+  it('keeps an instance-marked legacy session global before the freestyle fallback', () => {
+    expect(activeWorkoutHistoryPolicy({ routineId: null, instanceId: 'programme-instance' })).toBe('global')
+  })
+
+  it('classifies a marker-free legacy freestyle as fresh and strips all history', () => {
+    const state = {
+      unit: 'kg',
+      exWeights: { [LIFT]: { w: 125, unit: 'kg' } },
+      workouts: [selected]
+    }
+    const scoped = activeWorkoutHistoryState(state, { routineId: null })
+
+    expect(activeWorkoutHistoryPolicy({ routineId: null })).toBe('fresh-freestyle')
+    expect(scoped.workouts).toEqual([])
+    expect(scoped.exWeights).toEqual({})
+    expect(lastEntryFor(scoped, LIFT, 'reps')).toBeNull()
+  })
+
+  it('uses only the latest global eligible work entry for an explicit fresh-freestyle percentage', () => {
+    const older = {
+      d: '2026-01-01', unit: 'kg', entries: [{ id: LIFT, unit: 'kg', target: { mode: 'reps' },
+        sets: [{ phase: 'work', mode: 'reps', unit: 'kg', w: 60, r: 5, done: true }] }]
+    }
+    const newer = {
+      d: '2026-01-02', unit: 'kg', entries: [{ id: LIFT, unit: 'kg', target: { mode: 'reps' },
+        sets: [{ phase: 'work', mode: 'reps', unit: 'kg', w: 80, r: 3, done: true }] }]
+    }
+    const state = { unit: 'kg', exWeights: { [LIFT]: { w: 125, unit: 'kg' } }, workouts: [older, newer] }
+    const active = { routineId: null, historyPolicy: { kind: 'fresh-freestyle' } }
+
+    expect(activeWorkoutLoadReference(state, active,
+      { weightPrescription: { kind: 'percentage', percent: 50 } }, LIFT, 'reps'))
+      .toMatchObject({ d: '2026-01-02', sets: [{ w: 80, r: 3 }] })
+    expect(activeWorkoutLoadReference(state, active, { weight: 70 }, LIFT, 'reps')).toBeNull()
+  })
+
+  it.each([
+    ['zero-load reps row', { phase: 'work', mode: 'reps', unit: 'kg', w: 0, r: 10, done: true }],
+    ['zero-reps row', { phase: 'work', mode: 'reps', unit: 'kg', w: 80, r: 0, done: true }],
+    ['out-of-range reps row', { phase: 'work', mode: 'reps', unit: 'kg', w: 80, r: 13, done: true }],
+    ['timed row with stale reps', { phase: 'work', mode: 'time', unit: 'kg', w: 200, r: 10, sec: 60, done: true }],
+    ['incompatible-unit row', { phase: 'work', mode: 'reps', unit: 'lb', w: 80, r: 3, done: true }]
+  ])('skips a newer %s and keeps the latest eligible reps reference', (_label, newerSet) => {
+    const older = {
+      d: '2026-01-01', unit: 'kg', entries: [{ id: LIFT, unit: 'kg', target: { mode: 'reps' },
+        sets: [{ phase: 'work', mode: 'reps', unit: 'kg', w: 100, r: 5, done: true }] }]
+    }
+    const newerUnit = newerSet.unit === 'lb' ? 'lb' : 'kg'
+    const newer = {
+      d: '2026-01-02', unit: newerUnit, entries: [{ id: LIFT, unit: newerUnit, target: { mode: newerSet.mode },
+        sets: [newerSet] }]
+    }
+    const state = { unit: 'kg', exWeights: {}, workouts: [older, newer] }
+    const active = { routineId: null, historyPolicy: { kind: 'fresh-freestyle' } }
+
+    expect(activeWorkoutLoadReference(state, active,
+      { weightPrescription: { kind: 'percentage', percent: 50, fallbackWeight: 10 } }, LIFT, 'reps'))
+      .toMatchObject({ d: '2026-01-01', sets: [{ w: 100, r: 5 }] })
+  })
+
+  it('uses the newest eligible estimate rather than the all-time highest estimate', () => {
+    const older = {
+      d: '2026-01-01', unit: 'kg', entries: [{ id: LIFT, unit: 'kg', target: { mode: 'reps' },
+        sets: [{ phase: 'work', mode: 'reps', unit: 'kg', w: 100, r: 5, done: true }] }]
+    }
+    const newer = {
+      d: '2026-01-02', unit: 'kg', entries: [{ id: LIFT, unit: 'kg', target: { mode: 'reps' },
+        sets: [{ phase: 'work', mode: 'reps', unit: 'kg', w: 80, r: 3, done: true }] }]
+    }
+    const state = { unit: 'kg', exWeights: {}, workouts: [older, newer] }
+    const active = { routineId: null, historyPolicy: { kind: 'fresh-freestyle' } }
+
+    expect(activeWorkoutLoadReference(state, active,
+      { weightPrescription: { kind: 'percentage', percent: 50 } }, LIFT, 'reps'))
+      .toMatchObject({ d: '2026-01-02', sets: [{ w: 80, r: 3 }] })
+  })
+
+  it('uses global exact-compatible history for explicit percentage references in selected Repeat', () => {
+    const selected = {
+      d: '2026-01-01', unit: 'kg', entries: [{ id: LIFT, unit: 'kg', target: { mode: 'reps' },
+        sets: [{ phase: 'work', mode: 'reps', unit: 'kg', w: 60, r: 5, done: true }] }]
+    }
+    const newer = {
+      d: '2026-01-02', unit: 'kg', entries: [{ id: LIFT, unit: 'kg', target: { mode: 'reps' },
+        sets: [{ phase: 'work', mode: 'reps', unit: 'kg', w: 80, r: 3, done: true }] }]
+    }
+    const state = { unit: 'kg', exWeights: {}, workouts: [selected, newer] }
+    const active = { routineId: null, historyPolicy: { kind: 'selected-freestyle', workout: selected } }
+
+    expect(activeWorkoutLoadReference(state, active,
+      { weightPrescription: { kind: 'percentage', source: 'latest', percent: 50 } }, LIFT, 'reps'))
+      .toMatchObject({ d: '2026-01-02', sets: [{ w: 80, r: 3 }] })
+  })
+})
+
+describe('last setup reuse', () => {
+  it('projects only a completed exact exercise, unit, and mode-compatible planned setup', () => {
+    const state = {
+      unit: 'kg',
       workouts: [{
-        d: '2026-01-01',
-        entries: [{
-          id: LIFT,
-          target: { mode: 'reps', sets: 4, reps: 8, weight: 60, prog: 'linear' },
+        d: '2026-08-20', unit: 'kg', entries: [{
+          id: LIFT, unit: 'kg',
+          target: {
+            mode: 'reps', sets: 3, reps: 5, kind: 'amrap', amrapMinReps: 6, unit: 'kg',
+            weight: 60, resolvedWeight: 60,
+            weightPrescription: { kind: 'percentage', percent: 75, fallbackWeight: 45 },
+            warmup: [{ phase: 'warmup', mode: 'reps', reps: 8, weightPrescription: { kind: 'fixed', weight: 20 }, restSec: 30 }],
+            warmupRestSec: 45, workRestSec: 90, prog: 'greyskull', inc: 2.5,
+            amrapMissPolicy: 'maintain', bodyweight: false, side: true, notes: 'routine note', cues: 'private cue',
+            done: true, results: { private: true }, historyId: 'history-forbidden', timerId: 'forbidden'
+          },
+          plan: { policy: 'greyskull', weight: 62.5 },
           sets: [
-            { w: 60, r: 8, done: true },
-            { w: 62.5, r: 7, done: true },
-            { w: 62.5, r: 6, done: true },
-            { w: 62.5, r: 5, done: true }
+            { phase: 'warmup', mode: 'reps', unit: 'kg', w: 20, r: 8, done: true, restSec: 30, results: ['private'] },
+            { phase: 'work', mode: 'reps', unit: 'kg', w: 60, r: 9, done: true, amrapRole: 'progression', effort: 9,
+              timer: { started: 1 }, historyId: 'set-history-forbidden' }
           ]
         }]
       }]
     }
-    const cfg = freestyleConfig(S, { id: LIFT, mode: 'reps', sets: 3, reps: 10, weight: 0 })
 
-    expect(cfg).toEqual({ id: LIFT, mode: 'reps', sets: 4, reps: 8, weight: 60, prog: 'linear' })
-    expect(buildSets(S, cfg)).toEqual([
-      { w: 60, r: 8, done: false },
-      { w: 62.5, r: 7, done: false },
-      { w: 62.5, r: 6, done: false },
-      { w: 62.5, r: 5, done: false }
-    ])
+    const setup = lastSetupFor(state, LIFT, 'reps')
+    expect(setup).toEqual({
+      date: '2026-08-20', summary: '3 × 6 reps · AMRAP ≥ 6',
+      config: {
+        mode: 'reps', sets: 3, reps: 5, kind: 'amrap', amrapMinReps: 6,
+        weight: 60,
+        weightPrescription: { kind: 'percentage', source: 'adaptive', percent: 75, fallbackWeight: 45 },
+        warmup: [{ phase: 'warmup', mode: 'reps', reps: 8, weightPrescription: { kind: 'fixed', weight: 20 }, restSec: 30 }],
+        warmupRestSec: 45, workRestSec: 90, prog: 'greyskull', inc: 2.5,
+        amrapMissPolicy: 'maintain', bodyweight: false, side: true,
+        amrapRoles: ['progression']
+      }
+    })
+    expect(setup).not.toHaveProperty('occurrenceId')
+    expect(setup.config).not.toHaveProperty('notes')
+    expect(setup.config).not.toHaveProperty('cues')
+    expect(setup.config).not.toHaveProperty('done')
+    expect(setup.config).not.toHaveProperty('results')
+    expect(setup.config).not.toHaveProperty('historyId')
   })
 
-  it('inherits the target for timed and cardio exercises too', () => {
-    const timed = {
-      exWeights: {},
-      workouts: [{
-        d: '2026-01-02',
-        entries: [{
-          id: LIFT,
-          target: { mode: 'time', sets: 2, sec: 60, weight: 15 },
-          sets: [{ sec: 55, w: 15, done: true }, { sec: 60, w: 17.5, done: true }]
-        }]
-      }]
-    }
-    const cardio = {
-      exWeights: {},
-      workouts: [{
-        d: '2026-01-03',
-        entries: [{
-          id: CARDIO,
-          target: { sets: 2, min: 30, speed: 7 },
-          sets: [{ min: 28, speed: 7, done: true }, { min: 30, speed: 7.5, done: true }]
-        }]
-      }]
-    }
-
-    const timedCfg = freestyleConfig(timed, { id: LIFT, mode: 'time', sets: 3, sec: 45, weight: 0 })
-    expect(timedCfg).toEqual({ id: LIFT, mode: 'time', sets: 2, sec: 60, weight: 15 })
-    expect(buildSets(timed, timedCfg)).toEqual([
-      { sec: 55, w: 15, done: false },
-      { sec: 60, w: 17.5, done: false }
-    ])
-
-    const cardioCfg = freestyleConfig(cardio, { id: CARDIO, sets: 1, min: 20, speed: 8 })
-    expect(cardioCfg).toEqual({ id: CARDIO, sets: 2, min: 30, speed: 7 })
-    expect(buildSets(cardio, cardioCfg)).toEqual([
-      { min: 28, speed: 7, done: false },
-      { min: 30, speed: 7.5, done: false }
-    ])
+  const completedEntry = (id, weight, target = {}) => ({
+    id, unit: 'kg', occurrenceId: `${id}-occurrence`,
+    target: { mode: 'reps', sets: 1, reps: 5, weight, unit: 'kg', ...target },
+    notes: 'private entry note', cues: 'private cue',
+    sets: [{ phase: 'work', mode: 'reps', unit: 'kg', w: weight, r: 5, done: true }]
   })
 
-  it('keeps the supplied defaults when there is no completed matching workout', () => {
-    const cfg = freestyleConfig(emptyS, { id: LIFT, mode: 'reps', sets: 3, reps: 10, weight: 50 })
-    expect(cfg).toEqual({ id: LIFT, mode: 'reps', sets: 3, reps: 10, weight: 50 })
+  it('returns null when the only compatible row belongs to another exercise', () => {
+    const state = {
+      unit: 'kg',
+      workouts: [{ d: '2026-08-20', unit: 'kg', entries: [completedEntry(OTHER_LIFT, 90)] }]
+    }
+
+    expect(lastSetupFor(state, LIFT, 'reps')).toBeNull()
+  })
+
+  it.each([
+    ['other row before the exact row', (other, exact) => [other, exact]],
+    ['other row after the exact row', (other, exact) => [exact, other]]
+  ])('chooses the exact exercise when an %s exists', (_label, order) => {
+    const exact = completedEntry(LIFT, 60)
+    const other = completedEntry(OTHER_LIFT, 90)
+    const state = {
+      unit: 'kg',
+      workouts: [{ d: '2026-08-20', unit: 'kg', entries: order(other, exact) }]
+    }
+
+    expect(lastSetupFor(state, LIFT, 'reps')?.config).toMatchObject({ weight: 60 })
+  })
+
+  it('skips a newer incomplete same-ID row and reuses the older valid setup', () => {
+    const incomplete = completedEntry(LIFT, 90)
+    incomplete.sets[0].done = false
+    const state = {
+      unit: 'kg',
+      workouts: [
+        { d: '2026-08-19', unit: 'kg', entries: [completedEntry(LIFT, 60)] },
+        { d: '2026-08-20', unit: 'kg', entries: [incomplete] }
+      ]
+    }
+
+    expect(lastSetupFor(state, LIFT, 'reps')?.config).toMatchObject({ weight: 60 })
+  })
+
+  it('skips newer same-ID rows with the wrong unit or mode', () => {
+    const wrongMode = completedEntry(LIFT, 90, { mode: 'time', sec: 60 })
+    wrongMode.sets = [{ phase: 'work', mode: 'time', unit: 'kg', sec: 60, done: true }]
+    const wrongUnit = {
+      ...completedEntry(LIFT, 100), unit: 'lb',
+      target: { mode: 'reps', sets: 1, reps: 5, weight: 100, unit: 'lb' },
+      sets: [{ phase: 'work', mode: 'reps', unit: 'lb', w: 100, r: 5, done: true }]
+    }
+    const state = {
+      unit: 'kg',
+      workouts: [{
+        d: '2026-08-20', unit: 'kg', entries: [completedEntry(LIFT, 60), wrongMode]
+      }, {
+        d: '2026-08-21', unit: 'lb', entries: [wrongUnit]
+      }]
+    }
+
+    expect(lastSetupFor(state, LIFT, 'reps')?.config).toMatchObject({ weight: 60 })
+  })
+
+  it('keeps custom and built-in exercise IDs isolated', () => {
+    const customId = 'custom-last-setup'
+    const state = {
+      unit: 'kg',
+      workouts: [{ d: '2026-08-20', unit: 'kg', entries: [
+        completedEntry(LIFT, 60), completedEntry(customId, 80)
+      ] }]
+    }
+
+    expect(lastSetupFor(state, LIFT, 'reps')?.config).toMatchObject({ weight: 60 })
+    expect(lastSetupFor(state, customId, 'reps')?.config).toMatchObject({ weight: 80 })
+    expect(lastSetupFor(state, 'custom-last-setup-missing', 'reps')).toBeNull()
+  })
+
+  it('fails closed for incompatible mode, unit, legacy target, and incomplete rows', () => {
+    const base = {
+      d: '2026-08-20', unit: 'kg', entries: [{
+        id: LIFT, unit: 'kg', target: { mode: 'reps', sets: 1, reps: 5, weight: 60 },
+        sets: [{ phase: 'work', mode: 'reps', w: 60, r: 5, done: true }]
+      }]
+    }
+    expect(lastSetupFor({ unit: 'kg', workouts: [base] }, LIFT, 'time')).toBeNull()
+    expect(lastSetupFor({ unit: 'lb', workouts: [base] }, LIFT, 'reps')).toBeNull()
+    expect(lastSetupFor({ unit: 'kg', workouts: [{ ...base, entries: [{ ...base.entries[0], target: null }] }] }, LIFT, 'reps')).toBeNull()
+    expect(lastSetupFor({ unit: 'kg', workouts: [{ ...base, entries: [{ ...base.entries[0], sets: [{ phase: 'work', mode: 'reps', w: 60, r: 5, done: false }] }] }] }, LIFT, 'reps')).toBeNull()
+  })
+
+  it('skips incomplete and incompatible duplicate occurrences to find the newest compatible setup', () => {
+    const duplicate = (target, sets) => ({ id: LIFT, unit: 'kg', target, sets })
+    const state = {
+      unit: 'kg',
+      workouts: [{
+        d: '2026-08-20', unit: 'kg', entries: [
+          duplicate({ mode: 'reps', sets: 1, reps: 5, weight: 40, unit: 'kg' }, [{ phase: 'work', mode: 'reps', unit: 'kg', w: 40, r: 5, done: false }]),
+          duplicate({ mode: 'time', sets: 1, sec: 30, weight: 0, unit: 'kg' }, [{ phase: 'work', mode: 'time', unit: 'kg', sec: 30, done: true }]),
+          duplicate({ mode: 'reps', sets: 2, reps: 6, weight: 50, unit: 'kg' }, [{ phase: 'work', mode: 'reps', unit: 'kg', w: 50, r: 6, done: true }]),
+        ]
+      }]
+    }
+
+    expect(lastSetupFor(state, LIFT, 'reps')?.config).toMatchObject({ mode: 'reps', sets: 2, reps: 6, weight: 50 })
+  })
+
+  it('does not reuse an explicitly partial or incomplete completed-history record', () => {
+    const incomplete = {
+      d: '2026-08-21', unit: 'kg', complete: false, entries: [{
+        id: LIFT, target: { mode: 'reps', sets: 1, reps: 5, weight: 70 },
+        sets: [{ phase: 'work', mode: 'reps', unit: 'kg', w: 70, r: 5, done: true }]
+      }]
+    }
+    const partial = {
+      d: '2026-08-20', unit: 'kg', partial: true, entries: [{
+        id: LIFT, target: { mode: 'reps', sets: 1, reps: 5, weight: 60 },
+        sets: [{ phase: 'work', mode: 'reps', unit: 'kg', w: 60, r: 5, done: true }]
+      }]
+    }
+    expect(lastSetupFor({ unit: 'kg', workouts: [partial, incomplete] }, LIFT, 'reps')).toBeNull()
+  })
+})
+
+describe('history builders share the non-warm-up work boundary', () => {
+  const makeState = warmup => normalizeState({ unit: 'kg', workouts: [{
+    d: '2026-03-01', unit: 'kg', entries: [{
+      id: LIFT, unit: 'kg', target: { mode: 'reps', sets: 2, reps: 5, weight: 60, unit: 'kg' },
+      sets: [
+        { unit: 'kg', w: 20, r: 8, mode: 'reps', done: true, ...warmup },
+        { unit: 'kg', w: 60, r: 5, mode: 'reps', done: true },
+        { unit: 'kg', w: 60, r: 5, mode: 'reps', done: true }
+      ]
+    }]
+  }] })
+
+  it.each([
+    ['legacy boolean', { warmup: true }],
+    ['explicit phase', { phase: 'warmup' }]
+  ])('excludes the %s warm-up from lastEntryFor and buildSets', (_label, warmup) => {
+    const S = makeState(warmup)
+    expect(lastEntryFor(S, LIFT, 'reps').sets.map(set => set.w)).toEqual([60, 60])
+    expect(buildSets(S, { id: LIFT, mode: 'reps', sets: 2, reps: 5, weight: 0 }))
+      .toEqual([{ w: 60, r: 5, done: false }, { w: 60, r: 5, done: false }])
+  })
+
+  it('does not treat a warm-up-only history row as a completed work session', () => {
+    for (const warmup of [{ warmup: true }, { phase: 'warmup' }]) {
+      const S = normalizeState({ unit: 'kg', workouts: [{
+        d: '2026-03-02', unit: 'kg', entries: [{ id: LIFT, unit: 'kg', target: { mode: 'reps', sets: 1, reps: 5, weight: 50, unit: 'kg' }, sets: [
+          { unit: 'kg', w: 20, r: 8, mode: 'reps', done: true, ...warmup }
+        ] }]
+      }] })
+      expect(lastEntryFor(S, LIFT, 'reps')).toBeNull()
+    }
+  })
+})
+
+describe('workSetsDone shares the non-warm-up work boundary', () => {
+  it.each([
+    ['legacy boolean', { phase: 'work', warmup: true }],
+    ['explicit phase', { phase: 'warmup' }]
+  ])('excludes a completed %s warm-up', (_label, marker) => {
+    const workout = { entries: [{ sets: [
+      { ...marker, done: true },
+      { phase: 'work', done: true }
+    ] }] }
+    expect(workSetsDone(workout)).toBe(1)
+  })
+})
+
+describe('cascadeWeight shares the canonical warm-up boundary', () => {
+  it.each([
+    ['legacy boolean', { phase: 'work', warmup: true }],
+    ['explicit phase', { phase: 'warmup' }]
+  ])('does not cascade a warm-up change into work rows for %s rows', (_label, marker) => {
+    const rows = [
+      { ...marker, w: 20, done: false },
+      { ...marker, w: 22, done: false },
+      { phase: 'work', w: 60, done: false },
+      { phase: 'work', w: 70, done: true }
+    ]
+    expect(cascadeWeight(rows, 0, 30).map(row => row.w)).toEqual([20, 30, 60, 70])
   })
 })
 
@@ -444,9 +884,34 @@ describe('buildSets', () => {
       .toEqual([{ w: 40, r: 8, done: false }])
   })
 
-  it('still prefers the confirmed working weight for reps sets', () => {
-    const S = { exWeights: { [LIFT]: { w: 75 } }, workouts: [{ d: '2026-01-01', entries: [{ id: LIFT, sets: [{ w: 60, r: 10, done: true }] }] }] }
+  it('still prefers an explicitly current confirmed working weight for reps sets', () => {
+    const S = { unit: 'kg', exWeights: { [LIFT]: { w: 75, unit: 'kg' } }, workouts: [{ unit: 'kg', d: '2026-01-01', entries: [{ id: LIFT, sets: [{ unit: 'kg', w: 60, r: 10, done: true }] }] }] }
     expect(buildSets(S, { id: LIFT, sets: 1, reps: 8, weight: 50 })).toEqual([{ w: 75, r: 10, done: false }])
+  })
+
+  it('does not reuse a cached pound weight while the profile is in kilograms', () => {
+    const S = { unit: 'kg', exWeights: { [LIFT]: { w: 135, unit: 'lb', d: '2026-01-01' } }, workouts: [] }
+    expect(buildSets(S, { id: LIFT, sets: 1, reps: 8, weight: 60 })).toEqual([{ w: 60, r: 8, done: false }])
+  })
+
+  it('does not reuse an untagged legacy cache in either unit', () => {
+    const S = { unit: 'lb', exWeights: { [LIFT]: { w: 135, d: '2026-01-01' } }, workouts: [] }
+    expect(buildSets(S, { id: LIFT, sets: 1, reps: 8, weight: 100 })).toEqual([{ w: 100, r: 8, done: false }])
+  })
+
+  it('honours a workout-start resolved load over a stale confirmed weight', () => {
+    const S = { exWeights: { [LIFT]: { w: 75 } }, workouts: [] }
+    expect(buildSets(S, { id: LIFT, sets: 1, reps: 8, weight: 50, resolvedWeight: 35 }))
+      .toEqual([{ w: 35, r: 8, done: false }])
+  })
+
+  it('keeps mode-specific history separate across a reps/time mode switch', () => {
+    const S = { exWeights: {}, workouts: [
+      { d: '2026-01-01', entries: [{ id: LIFT, sets: [{ w: 60, r: 10, done: true }] }] },
+      { d: '2026-01-02', entries: [{ id: LIFT, target: { mode: 'time' }, sets: [{ sec: 70, w: 10, done: true }] }] }
+    ] }
+    expect(buildSets(S, { id: LIFT, mode: 'reps', sets: 1, reps: 8, weight: 40 })).toEqual([{ w: 60, r: 10, done: false }])
+    expect(buildSets(S, { id: LIFT, mode: 'time', sets: 1, sec: 45, weight: 0 })).toEqual([{ sec: 70, w: 10, done: false }])
   })
 
   it('can preserve each last set weight for freestyle instead of using the working-weight hint', () => {
@@ -468,6 +933,184 @@ describe('workoutVolume', () => {
     expect(workoutVolume(w)).toBe(600)
   })
 
+  it('attributes completed volume and completed sets by phase', () => {
+    const w = { entries: [
+      { id: LIFT, target: { mode: 'time' }, sets: [
+        { phase: 'warmup', mode: 'reps', w: 20, r: 10, done: true },
+        { phase: 'work', mode: 'time', sec: 45, w: 20, done: true }
+      ] },
+      { id: LIFT, sets: [{ phase: 'work', w: 60, r: 5, done: true }] }
+    ] }
+    expect(volumeByPhase(w)).toEqual({ warmup: 200, work: 300 })
+    expect(setsByPhase(w)).toEqual({ warmup: 1, work: 2 })
+  })
+
+  it('does not treat a targetless timed record as a best reps weight', () => {
+    const S = { workouts: [
+      { d: '2026-01-01', entries: [{ id: LIFT, sets: [{ w: 200, r: 5, sec: 60, done: true }] }] },
+      { d: '2026-01-02', entries: [{ id: LIFT, sets: [{ w: 70, r: 5, done: true }] }] }
+    ] }
+    expect(lastEntryFor(S, LIFT, 'reps').sets[0].w).toBe(70)
+    expect(lastEntryFor(S, LIFT, 'time').sets[0].sec).toBe(60)
+    // the timed record still contributes its completed load as a fallback (owner blocker: no 0)
+    expect(bestWeightFor(S, LIFT)).toBe(200)
+  })
+
+  it('does not reuse rep-shaped rows from a persisted timed target', () => {
+    const S = { workouts: [
+      { d: '2026-01-01', entries: [{ id: LIFT, target: { mode: 'time', sec: 45 }, topW: 999, sets: [{ w: 200, r: 5, done: true }] }] },
+      { d: '2026-01-02', entries: [{ id: LIFT, target: { mode: 'reps', reps: 5 }, sets: [{ w: 70, r: 5, done: true }] }] }
+    ] }
+    expect(lastEntryFor(S, LIFT, 'reps').sets[0].w).toBe(70)
+    // the timed-target record's completed load is the fallback (owner blocker: no 0)
+    expect(bestWeightFor(S, LIFT)).toBe(200)
+  })
+
+  it('uses an explicit completed reps row under a timed target for strength state', () => {
+    const S = { unit: 'kg', workouts: [
+      { unit: 'kg', d: '2026-01-01', entries: [{ id: LIFT, unit: 'kg', target: { mode: 'time', sec: 45 }, topW: 200, sets: [
+        { phase: 'work', mode: 'reps', unit: 'kg', w: 100, r: 5, done: true },
+        { phase: 'work', mode: 'time', unit: 'kg', w: 200, sec: 60, done: true }
+      ] }] },
+      { unit: 'kg', d: '2026-01-02', entries: [{ id: LIFT, target: { mode: 'reps', reps: 5 }, sets: [
+        { phase: 'work', mode: 'reps', unit: 'kg', w: 90, r: 5, done: true }
+      ] }] }
+    ] }
+
+    expect(bestWeightFor(S, LIFT)).toBe(100)
+    expect(90 > bestWeightFor(S, LIFT)).toBe(false)
+  })
+
+  it('uses the explicit reps row under a timed parent and never trusts stale topW', () => {
+    const entry = { id: LIFT, unit: 'kg', target: { mode: 'time', sec: 45 }, topW: 200, sets: [
+      { phase: 'work', mode: 'reps', unit: 'kg', w: 100, r: 5, done: true }
+    ] }
+    expect(metricModeForEntry(entry)).toBe('reps')
+    expect(metricRowsForEntry(entry, 'reps')).toEqual([entry.sets[0]])
+    expect(bestWeightForEntry(entry)).toBe(100)
+    expect(bestWeightFor({ unit: 'kg', workouts: [{ unit: 'kg', entries: [entry] }] }, LIFT)).toBe(100)
+  })
+
+  it('uses topW only for an otherwise wholly reps-compatible entry', () => {
+    const entry = { target: { mode: 'reps', reps: 5 }, topW: 80, sets: [
+      { phase: 'work', mode: 'reps', w: 60, r: 5, done: true }
+    ] }
+    expect(bestWeightForEntry(entry)).toBe(80)
+  })
+
+  it('selects only completed rows for a mixed Stats metric and keeps non-reps rows separate', () => {
+    const entry = { target: { mode: 'time', sec: 45 }, sets: [
+      { phase: 'warmup', mode: 'reps', w: 20, r: 8, done: true },
+      { phase: 'work', mode: 'reps', w: 100, r: 5, done: true },
+      { phase: 'work', mode: 'time', w: 200, sec: 60, done: true },
+      { phase: 'work', mode: 'reps', w: 110, r: 5, done: false }
+    ] }
+    expect(metricModeForEntry(entry)).toBe('reps')
+    expect(metricRowsForEntry(entry, 'reps')).toEqual([entry.sets[1]])
+    expect(metricRowsForEntry(entry, 'time')).toEqual([entry.sets[2]])
+    expect(metricRowsForEntry(entry, 'cardio')).toEqual([])
+  })
+
+  it('keeps explicit reps rows under a timed parent in the reps history cache', () => {
+    const S = { exWeights: {}, workouts: [{ d: '2026-01-01', entries: [{ id: LIFT,
+      target: { mode: 'time', sec: 45 }, sets: [
+        { phase: 'work', mode: 'reps', w: 100, r: 5, done: true },
+        { phase: 'work', mode: 'time', w: 200, sec: 60, done: true }
+      ]
+    }] }] }
+    expect(lastEntryFor(S, LIFT, 'reps').sets).toEqual([S.workouts[0].entries[0].sets[0]])
+    expect(buildSets(S, { id: LIFT, mode: 'reps', sets: 1, reps: 5, weight: 40 }))
+      .toEqual([{ w: 100, r: 5, done: false }])
+  })
+
+  it('excludes an unannotated rep-shaped row under a timed parent from historical best weight', () => {
+    const S = { unit: 'kg', workouts: [
+      { unit: 'kg', d: '2026-01-01', entries: [{ id: LIFT, target: { mode: 'time', sec: 45 }, topW: 200, sets: [
+        { phase: 'work', unit: 'kg', w: 200, r: 12, done: true }
+      ] }] },
+      { unit: 'kg', d: '2026-01-02', entries: [{ id: LIFT, target: { mode: 'reps', reps: 5 }, sets: [
+        { phase: 'work', mode: 'reps', unit: 'kg', w: 100, r: 5, done: true }
+      ] }] }
+    ] }
+
+    expect(bestWeightFor(S, LIFT)).toBe(100)
+  })
+
+  it('uses authoritative reps work rows from a mixed entry for load PR comparison', () => {
+    const S = { unit: 'kg', workouts: [
+      { unit: 'kg', d: '2026-01-01', entries: [{ id: LIFT, target: { mode: 'reps', reps: 5 }, sets: [
+        { phase: 'work', mode: 'reps', unit: 'kg', w: 100, r: 5, done: true },
+        { phase: 'work', mode: 'time', unit: 'kg', w: 200, sec: 60, done: true }
+      ] }] },
+      { unit: 'kg', d: '2026-01-02', entries: [{ id: LIFT, target: { mode: 'reps', reps: 5 }, sets: [
+        { phase: 'work', mode: 'reps', unit: 'kg', w: 90, r: 5, done: true }
+      ] }] }
+    ] }
+
+    expect(bestWeightFor(S, LIFT)).toBe(100)
+    expect(90 > bestWeightFor(S, LIFT)).toBe(false)
+  })
+
+  it('does not treat timed-only work as a strength weight', () => {
+    const S = { unit: 'kg', workouts: [{
+      unit: 'kg', d: '2026-01-03', entries: [{ id: LIFT, target: { mode: 'time', sec: 60 }, sets: [
+        { phase: 'work', mode: 'time', unit: 'kg', w: 200, sec: 60, done: true }
+      ] }]
+    }] }
+
+    // timed-only work contributes its completed load as the fallback (owner blocker: no 0)
+    expect(bestWeightFor(S, LIFT)).toBe(200)
+  })
+
+  it('excludes unitless weighted legacy history while retaining no-load bodyweight and timed rows', () => {
+    const S = { unit: 'kg', workouts: [
+      { d: '2026-01-03', entries: [{ id: LIFT, sets: [{ w: 135, r: 5, done: true }] }] },
+      { d: '2026-01-04', entries: [{ id: LIFT, sets: [{ w: 0, r: 10, done: true }] }] },
+      { d: '2026-01-05', entries: [{ id: LIFT, target: { mode: 'time', sets: 1, sec: 45 }, sets: [{ sec: 45, w: 0, done: true }] }] }
+    ] }
+    expect(historyUnitCompatible(S.workouts[0], S.unit)).toBe(false)
+    expect(historyUnitCompatible(S.workouts[1], S.unit)).toBe(true)
+    expect(historyUnitCompatible(S.workouts[2], S.unit)).toBe(true)
+    expect(workoutsForUnit(S)).toHaveLength(2)
+    expect(lastEntryFor(S, LIFT, 'reps').sets[0]).toMatchObject({ w: 0, r: 10 })
+    expect(bestWeightFor(S, LIFT)).toBe(0)
+    expect(workoutVolume(S.workouts[0], S.unit)).toBe(0)
+  })
+
+  it('uses the profile unit for legacy rows but does not carry a different-unit row forward', () => {
+    const S = { unit: 'kg', workouts: [
+      { d: '2026-01-01', unit: 'lb', entries: [{ id: LIFT, sets: [{ unit: 'lb', w: 200, r: 5, done: true }] }] },
+      { d: '2026-01-02', unit: 'kg', entries: [{ id: LIFT, sets: [{ unit: 'kg', w: 70, r: 5, done: true }] }] }
+    ] }
+    expect(lastEntryFor(S, LIFT, 'reps').sets[0].w).toBe(70)
+    expect(bestWeightFor(S, LIFT)).toBe(70)
+  })
+
+  it('rejects a latest entry whose working sets mix weight units', () => {
+    const S = { unit: 'kg', workouts: [{ d: '2026-01-01', entries: [{ id: LIFT, sets: [
+      { unit: 'kg', w: 70, r: 5, done: true }, { unit: 'lb', w: 200, r: 5, done: true }
+    ] }] }] }
+    expect(lastEntryFor(S, LIFT, 'reps')).toBeNull()
+    expect(bestWeightFor(S, LIFT)).toBe(0)
+  })
+
+  it('uses one unit-compatible workout set for visible Home counts', () => {
+    const S = { unit: 'kg', workouts: [
+      { id: 'current', d: '2026-01-01', unit: 'kg', entries: [{ id: LIFT,
+        sets: [{ unit: 'kg', w: 60, r: 5, done: true }] }] },
+      { id: 'other-unit', d: '2026-01-02', unit: 'lb', entries: [{ id: LIFT,
+        sets: [{ unit: 'lb', w: 135, r: 5, done: true }] }] },
+      { id: 'mixed', d: '2026-01-03', unit: 'kg', entries: [{ id: LIFT, sets: [
+        { unit: 'kg', w: 60, r: 5, done: true }, { unit: 'lb', w: 135, r: 5, done: true }
+      ] }] },
+      { id: 'legacy-weight', d: '2026-01-04', entries: [{ id: LIFT,
+        sets: [{ w: 60, r: 5, done: true }] }] },
+      { id: 'legacy-bodyweight', d: '2026-01-05', entries: [{ id: LIFT,
+        sets: [{ w: 0, r: 10, done: true }] }] }
+    ] }
+
+    expect(workoutsForUnit(S).map(workout => workout.id)).toEqual(['current', 'legacy-bodyweight'])
+  })
   it('needs no per-side case — the logged reps are already both sides (issue #31)', () => {
     const w = { entries: [{ id: LIFT, target: { side: true }, sets: [{ w: 20, r: 16, done: true }] }] }
     expect(workoutVolume(w)).toBe(320)
@@ -478,75 +1121,13 @@ describe('workoutVolume', () => {
     expect(workoutVolume(w)).toBe(0)
   })
 
-  it('recognizes both warm-up schemas in work-set counts', () => {
-    const w = {
-      unit: 'kg',
-      entries: [{
-        id: LIFT,
-        unit: 'kg',
-        sets: [
-          { warmup: true, unit: 'kg', w: 20, r: 5, done: true },
-          { phase: 'warmup', unit: 'kg', w: 30, r: 5, done: true },
-          { phase: 'work', unit: 'kg', w: 60, r: 5, done: true },
-        ],
-      }],
-    }
-    expect(workSetsDone(w)).toBe(1)
-  })
-
-  it('does not use a warm-up as the previous best working weight', () => {
-    expect(bestWeightFor({ workouts: [{ entries: [{ id: LIFT, topW: 120, sets: [
-      { phase: 'warmup', done: true, w: 120 },
-      { phase: 'work', done: true, w: 80 },
-    ] }] }] }, LIFT)).toBe(80)
-    expect(bestWeightFor({ workouts: [{ entries: [{ id: LIFT, topW: 120, sets: [
-      { phase: 'warmup', done: true, w: 120 },
-    ] }] }] }, LIFT)).toBe(0)
-  })
-
-  it('uses completed non-warm-up load for timed entries', () => {
-    expect(bestWeightForEntry({ target: { mode: 'time' }, topW: 200, sets: [
-      { phase: 'warmup', sec: 30, w: 30, done: true },
-      { phase: 'work', sec: 60, w: 20, done: true },
-      { phase: 'work', sec: 75, w: 25, done: true },
-      { phase: 'work', sec: 90, w: 40, done: false },
-    ] })).toBe(25)
-  })
-
-  it('does not report a repeated weighted timed hold as a new load PR (blocker 3)', () => {
-    const prior = {
-      id: LIFT,
-      target: { mode: 'time' },
-      sets: [{ phase: 'work', sec: 60, w: 20, done: true }],
-    }
-    const repeated = {
-      id: LIFT,
-      target: { mode: 'time' },
-      sets: [{ phase: 'work', sec: 60, w: 20, done: true }],
-    }
-    const state = { workouts: [{ entries: [prior] }] }
-    const repeatedWeight = Math.max(0, ...repeated.sets.filter(set => set.done).map(set => set.w || 0))
-
-    expect(bestWeightForEntry(prior)).toBe(20)
-    expect(repeatedWeight > bestWeightFor(state, LIFT)).toBe(false)
-  })
-})
-
-describe('superset editing', () => {
-  it('pairs adjacent entries without mutating the source and keeps the display units contiguous', () => {
-    const entries = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
-    const paired = pairAdjacent(entries, 1, 2, 'sg-new')
-
-    expect(paired).toEqual([{ id: 'a' }, { id: 'b', sg: 'sg-new' }, { id: 'c', sg: 'sg-new' }])
-    expect(entries).toEqual([{ id: 'a' }, { id: 'b' }, { id: 'c' }])
-    expect(supersetUnits(paired)).toEqual([[0], [1, 2]])
-  })
 
   it('merges both contiguous groups when their boundary entries are paired', () => {
     const entries = [
       { id: 'a', sg: 'left' }, { id: 'b', sg: 'left' },
       { id: 'c', sg: 'right' }, { id: 'd', sg: 'right' }
     ]
+
     const merged = pairAdjacent(entries, 1, 2)
 
     expect(merged.map(e => e.sg)).toEqual(['left', 'left', 'left', 'left'])
@@ -558,6 +1139,7 @@ describe('superset editing', () => {
       { id: 'a', sg: 'group' }, { id: 'b', sg: 'group' }, { id: 'c', sg: 'group' },
       { id: 'd', sg: 'orphan' }
     ]
+
     const unpaired = unpairSuperset(entries, 1)
 
     expect(unpaired).toEqual([{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }])
@@ -572,115 +1154,98 @@ describe('superset editing', () => {
   })
 })
 
-describe('superset editing', () => {
-  it('pairs adjacent entries without mutating the source and keeps the display units contiguous', () => {
-    const entries = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
-    const paired = pairAdjacent(entries, 1, 2, 'sg-new')
-
-    expect(paired).toEqual([{ id: 'a' }, { id: 'b', sg: 'sg-new' }, { id: 'c', sg: 'sg-new' }])
-    expect(entries).toEqual([{ id: 'a' }, { id: 'b' }, { id: 'c' }])
-    expect(supersetUnits(paired)).toEqual([[0], [1, 2]])
+describe('planned routine completion selection', () => {
+  const plans = [{ id: 'push' }, { id: 'pull' }]
+  const status = workouts => weeklySessionStatus({ workouts }, {
+    source: 'classic', routineId: 'push', calendarDate: '2026-07-27'
   })
 
-  it('merges both contiguous groups when their boundary entries are paired', () => {
-    const entries = [
-      { id: 'a', sg: 'left' }, { id: 'b', sg: 'left' },
-      { id: 'c', sg: 'right' }, { id: 'd', sg: 'right' }
+  it('deduplicates completed routine ids by the local workout date', () => {
+    const S = { workouts: [
+      { d: '2026-07-27T08:00:00.000Z', routineId: 'push' },
+      { d: '2026-07-27', routineId: 'push' },
+      { d: '2026-07-26T23:59:59.000Z', routineId: 'pull' },
+      { d: '2026-07-27', routineId: null }
+    ] }
+
+    expect(completedRoutineIdsForDate(S, '2026-07-27')).toEqual(new Set(['push']))
+  })
+
+  it('does not let a Programme partial complete an unrelated classic plan', () => {
+    const S = { workouts: [
+      { d: '2026-07-27', routineId: 'push', sessionType: 'programme', programmeId: 'p', cycleId: 'c', partial: true },
+      { d: '2026-07-27', routineId: 'pull' },
+      { d: '2026-07-27', routineId: 'push', classicConversion: true, programmeId: 'p', programmeCreatedFromWeek: '2026-W30', classic: true }
+    ] }
+
+    expect(completedRoutineIdsForDate(S, '2026-07-27')).toEqual(new Set(['pull', 'push']))
+  })
+
+  it.each([
+    ['classicConversion', { classicConversion: true }],
+    ['convertedFromWeek', { convertedFromWeek: '2026-W30' }],
+    ['programmeCreatedFromWeek plus classic', { programmeCreatedFromWeek: '2026-W30', classic: true }]
+  ])('treats a Programme-marked %s record as a completed classic attempt', (_label, marker) => {
+    const converted = {
+      d: '2026-07-27', routineId: 'push', plannedComplete: true,
+      programmeId: 'converted-programme', ...marker
+    }
+
+    expect(status([converted])).toBe('done')
+    expect(completedRoutineIdsForDate({ workouts: [converted] }, '2026-07-27')).toEqual(new Set(['push']))
+    expect(status([converted, {
+      d: '2026-07-27', routineId: 'push', plannedComplete: false
+    }])).toBe('done')
+  })
+
+  it('excludes a true completed Programme record from classic completion projections', () => {
+    const programme = {
+      d: '2026-07-27', routineId: 'push', plannedComplete: true,
+      sessionType: 'programme', programmeId: 'programme', cycleId: 'cycle'
+    }
+
+    expect(status([programme])).toBe('start')
+    expect(completedRoutineIdsForDate({ workouts: [programme] }, '2026-07-27')).toEqual(new Set())
+  })
+
+  it('does not count an explicitly early-finished classic routine as completed', () => {
+    const S = { workouts: [
+      { d: '2026-07-27', routineId: 'push', plannedComplete: false },
+      { d: '2026-07-27', routineId: 'pull', plannedComplete: true }
+    ] }
+
+    expect(completedRoutineIdsForDate(S, '2026-07-27')).toEqual(new Set(['pull']))
+  })
+
+  it('keeps a completed classic slot done after a later Repeat finishes early', () => {
+    const workouts = [
+      { id: 'completed', d: '2026-07-27', routineId: 'push', plannedComplete: true },
+      { id: 'repeat-early', d: '2026-07-27', routineId: 'push', plannedComplete: false }
     ]
-    const merged = pairAdjacent(entries, 1, 2)
 
-    expect(merged.map(e => e.sg)).toEqual(['left', 'left', 'left', 'left'])
-    expect(entries.map(e => e.sg)).toEqual(['left', 'left', 'right', 'right'])
+    expect(status(workouts)).toBe('done')
+    expect(completedRoutineIdsForDate({ workouts }, '2026-07-27')).toEqual(new Set(['push']))
   })
 
-  it('unpairs one entry and removes sg values left without an adjacent partner', () => {
-    const entries = [
-      { id: 'a', sg: 'group' }, { id: 'b', sg: 'group' }, { id: 'c', sg: 'group' },
-      { id: 'd', sg: 'orphan' }
-    ]
-    const unpaired = unpairSuperset(entries, 1)
+  it('uses active, completed, early-finished, and discarded precedence for repeated attempts', () => {
+    const early = { d: '2026-07-27', routineId: 'push', plannedComplete: false }
+    const complete = { d: '2026-07-27', routineId: 'push', plannedComplete: true }
+    const session = { source: 'classic', routineId: 'push', calendarDate: '2026-07-27' }
 
-    expect(unpaired).toEqual([{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }])
-    expect(entries.map(e => e.sg)).toEqual(['group', 'group', 'group', 'orphan'])
+    expect(status([early])).toBe('resume')
+    expect(status([early, { ...early, id: 'second' }, complete])).toBe('done')
+    expect(weeklySessionStatus({ workouts: [complete], active: {
+      d: '2026-07-27', routineId: 'push'
+    } }, session)).toBe('resume')
+    expect(status([])).toBe('start')
+    expect(weeklySessionStatus({ workouts: [complete], active: {
+      d: '2026-07-28', routineId: 'push'
+    } }, session)).toBe('done')
   })
 
-  it('rejects a non-adjacent pairing request', () => {
-    const entries = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
-
-    expect(() => pairAdjacent(entries, 0, 2, 'sg-invalid')).toThrow(/adjacent/)
-    expect(entries).toEqual([{ id: 'a' }, { id: 'b' }, { id: 'c' }])
-  })
-})
-
-
-describe('session row helpers', () => {
-  it('cascadeWeight propagates to same-flag undone rows and never rewrites done sets', () => {
-    const rows = [
-      { warmup: true, w: 20, done: true },
-      { warmup: true, w: 20, done: false },
-      { w: 60, done: true },
-      { w: 60, done: false },
-      { w: 60, done: false },
-    ]
-    const next = cascadeWeight(rows, 2, 62.5)
-    expect(next[2].w).toBe(60)             // done set untouched
-    expect(next[3].w).toBe(62.5)           // same flag (work), undone
-    expect(next[4].w).toBe(62.5)           // same flag (work), undone
-    expect(next[1].w).toBe(20)             // different flag (warm-up) untouched
-  })
-
-  it('cascadeWeight deleting the weight removes the key from following undone rows only', () => {
-    const rows = [
-      { w: 60, done: true },
-      { w: 60, done: false },
-      { w: 60, done: false },
-    ]
-    const next = cascadeWeight(rows, 0, null)
-    expect(next[0].w).toBe(60)             // done set untouched
-    expect('w' in next[1]).toBe(false)
-    expect('w' in next[2]).toBe(false)
-  })
-
-  it('insertWarmupRow inserts before the first work row and copies the last warm-up values', () => {
-    const rows = [
-      { warmup: true, w: 20, r: 8, done: true },
-      { warmup: true, w: 30, r: 8, done: false },
-      { w: 60, r: 8, done: false },
-    ]
-    const next = insertWarmupRow(rows, 'reps', { reps: 8 })
-    expect(next.length).toBe(4)
-    expect(next[2].warmup).toBe(true)
-    expect(next[2].w).toBe(30)             // copies the preceding warm-up
-    expect(next[3].w).toBe(60)             // work row still after the warm-up block
-  })
-
-  it('removeRowAt never empties an entry below one row', () => {
-    expect(removeRowAt([{ w: 60 }], 0).length).toBe(1)
-    const rows = [{ w: 60 }, { w: 70 }]
-    const next = removeRowAt(rows, 0)
-    expect(next.length).toBe(1)
-    expect(next[0].w).toBe(70)
-  })
-})
-
-// The importer writes `phase: 'warmup'` and no `warmup` boolean (import-csv.js), so anything
-// reading the raw flag counts an imported warm-up as work. Read through the model instead.
-describe('warm-up rows identified by phase alone', () => {
-  const imported = { w: 40, r: 10, done: true, phase: 'warmup' }
-  const work = { w: 100, r: 5, done: true }
-
-  it('workSetsDone does not count a phase-only warm-up', () => {
-    expect(workSetsDone({ entries: [{ sets: [imported, work] }] })).toBe(1)
-  })
-
-  it('cascadeWeight keeps phase-only warm-ups in their own lane', () => {
-    const rows = [
-      { w: 40, r: 10, phase: 'warmup' },
-      { w: 45, r: 10, phase: 'warmup' },
-      { w: 100, r: 5 },
-    ]
-    const next = cascadeWeight(rows, 0, 50)
-    expect(next[1].w).toBe(50)
-    expect(next[2].w).toBe(100)
+  it('keeps only an uncompleted plan as the fast-path choice', () => {
+    expect(reconcileStartSessionChoice(plans, new Set(), null)).toBe('push')
+    expect(reconcileStartSessionChoice(plans, new Set(['push']), 'push')).toBe('pull')
+    expect(reconcileStartSessionChoice(plans, new Set(['push', 'pull']), 'pull')).toBeNull()
   })
 })

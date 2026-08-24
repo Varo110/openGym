@@ -79,7 +79,7 @@ function lifecycleWorkouts(now = BASE_NOW) {
     36 * Math.log2((6 * weightedSet / referenceAfterOldSession) / Math.LN2) * HOUR - 30000
   )
   const balanceEdge = now - (30 * DAY - 30000)
-  const strengthEdge = now - (14 * DAY - 30000)
+  const strengthEdge = now - (21 * DAY - 30000)
   return [
     workout('fatigue-edge', fatigueEdge, [entry('1254', Array.from({ length: 6 }, () => set(true, { rir: 0 })))]),
     workout('balance-edge', balanceEdge, [entry('1254', [set(true, { rir: 2 })])]),
@@ -102,7 +102,7 @@ function allFatiguedWorkout(now = BASE_NOW) {
 }
 
 function allSubfullWorkout(now = BASE_NOW) {
-  return workout('all-subfull', now - 15 * DAY, [entry('1254', [set(true)])])
+  return workout('all-subfull', now - 30 * DAY, [entry('1254', [set(true)])])
 }
 
 function resetFixture(workouts = lifecycleWorkouts()) {

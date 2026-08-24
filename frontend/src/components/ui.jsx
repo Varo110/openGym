@@ -93,16 +93,17 @@ export function Switch({ checked, onChange, disabled }) {
 /* ============================ segmented ============================ */
 
 // options: [{ value, label, icon? }]  — the selected pill slides between cells.
-export function Segmented({ options, value, onChange, className = '' }) {
+export function Segmented({ options, value, onChange, className = '', disabled = false }) {
   const i = Math.max(0, options.findIndex(o => o.value === value))
   return (
-    <div className={'seg ' + className} style={{ '--n': options.length, '--i': i }}>
+    <div className={'seg ' + className} style={{ '--n': options.length, '--i': i }} aria-disabled={disabled || undefined}>
       <span className="seg-sel" aria-hidden="true" />
       {options.map(o => (
         <button
           key={o.value}
           className={o.value === value ? 'on' : ''}
           aria-pressed={o.value === value}
+          disabled={disabled}
           onClick={() => onChange(o.value)}
         >
           {o.icon && <Icon name={o.icon} />}
@@ -196,10 +197,11 @@ export function Slider({ value, min = 0, max = 100, step = 1, onChange, classNam
 
 /* ============================ checkbox ============================ */
 
-export function Check({ checked, onChange, className = '', size }) {
+export function Check({ checked, onChange, className = '', size, ariaLabel }) {
   return (
     <button
       role="checkbox"
+      aria-label={ariaLabel}
       aria-checked={!!checked}
       className={'chk' + (checked ? ' on' : '') + ' ' + className}
       style={size ? { width: size, height: size } : null}
@@ -271,6 +273,50 @@ export function SelectRow({ icon, iconTint, title, value, options, onChange, she
   }
   return (
     <Row icon={icon} iconTint={iconTint} title={title} value={cur ? cur.label : value} accessory="chevron" onClick={open} />
+  )
+}
+
+/** Multi-select row: shows the chosen values, opens a sheet where every option is a
+ * toggling row with a check. The sheet keeps its own selection mirror so the tick and
+ * highlight update instantly on tap (a static element tree would never re-render);
+ * onToggle still mutates the caller's state on every tap. */
+export function MultiSelectRow({ icon, iconTint, title, values, options, onToggle, sheetTitle, noneLabel, doneLabel }) {
+  const selected = options.filter(o => values.includes(o.value))
+  const summary = selected.length ? selected.map(o => o.label).join(', ') : (noneLabel || '')
+  const open = () => {
+    const { openSheet } = require_ui()
+    openSheet(close => <MultiSelectSheet values={values} options={options} onToggle={onToggle}
+      title={sheetTitle || title} noneLabel={noneLabel} doneLabel={doneLabel} close={close} />)
+  }
+  return (
+    <Row icon={icon} iconTint={iconTint} title={title} value={summary} accessory="chevron" onClick={open} />
+  )
+}
+
+function MultiSelectSheet({ values, options, onToggle, title, doneLabel, close }) {
+  const [sel, setSel] = useState(values)
+  const toggle = v => {
+    setSel(cur => cur.includes(v) ? cur.filter(x => x !== v) : [...cur, v])
+    onToggle(v)
+  }
+  return (
+    <>
+      <h3>{title}</h3>
+      <div className="sect-b">
+        {options.map(o => {
+          const on = sel.includes(o.value)
+          return (
+            <button key={o.value} className={'lrow tap' + (on ? ' on' : '')} onClick={() => toggle(o.value)}>
+              <span className="lrow-m"><span className="lrow-t">{o.label}</span>
+                {o.subtitle && <span className="lrow-s">{o.subtitle}</span>}</span>
+              {on && <Icon name="check" className="lrow-k" />}
+            </button>
+          )
+        })}
+      </div>
+      <div style={{ height: 8 }} />
+      <Button variant="primary" onClick={close}>{doneLabel || 'Done'}</Button>
+    </>
   )
 }
 

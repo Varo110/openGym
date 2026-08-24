@@ -162,7 +162,8 @@ button,.chip,.tile,.item,.wday,.cal-d,.swatch,.hm-c,.lrow,.seg button,.stp butto
 
 /* ---------------------------------------------------------------- layout -- */
 #app{
-  padding:calc(var(--sat) + 8px) var(--pad) calc(128px + var(--sab));
+  /* Keep the last action clear of the fixed navigation and any global timer. */
+  padding:calc(var(--sat) + 8px) var(--pad) calc(144px + var(--sab));
   max-width:560px;margin:0 auto;
 }
 /* while the rest timer floats above the tab bar, keep its height scrollable-past
@@ -196,6 +197,8 @@ h4.sec{
 .divider{height:var(--hair);background:var(--sep);margin:14px 0;border:0}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .row{display:flex;align-items:center;gap:12px}
+.grow{flex:1;min-width:0}
+.exrow .grow{flex:1;min-width:0}
 .row.between{justify-content:space-between}
 
 /* ----------------------------------------------------------------- card -- */
@@ -324,17 +327,22 @@ h4.sec{
   background:none;border:none;transition:background var(--fast);
 }
 .wday .lbl{font-size:11px;color:var(--label-3);font-weight:500;text-transform:uppercase;letter-spacing:.03em}
-.wday .num{font-size:17px;font-weight:400;margin:4px 0;letter-spacing:-.012em}
-.wday .dot{width:5px;height:5px;border-radius:50%;background:transparent;margin:0 auto}
+.wday .num{font-size:17px;font-weight:400;margin:2px auto;letter-spacing:-.012em;
+  width:31px;height:31px;border-radius:50%;display:flex;align-items:center;justify-content:center}
+.wday .dot{width:5px;height:5px;border-radius:50%;background:transparent;margin:9px auto 0}
 .wday .dot.plan{background:var(--label-3)}
 .wday .dot.ovr{background:var(--orange)}
 .wday .dot.done{background:var(--acc)}
 .wday:active{background:var(--surface-2)}
 .wday.today .num{
   background:var(--acc);color:var(--on-acc);font-weight:600;
-  width:31px;height:31px;border-radius:50%;display:flex;align-items:center;
-  justify-content:center;margin:2px auto;
 }
+
+.wday.sel .num{
+  outline:2px solid var(--acc);outline-offset:2px;border-radius:50%;
+}
+.wday.today.sel .num{outline-color:var(--orange)}
+.wday.sel{background:color-mix(in srgb,var(--acc) 8%,transparent)}
 
 /* ----------------------------------------------------------------- list -- */
 .list{display:flex;flex-direction:column;gap:8px}
@@ -360,10 +368,124 @@ h4.sec{
 }
 .tag.acc{background:var(--acc-soft);color:var(--acc)}
 
+/* ----------------------------------------------- active programme detail -- */
+.programme-detail{padding:14px;overflow:hidden}
+.prog-detail-head{align-items:flex-start;justify-content:space-between;gap:8px}
+.prog-pills{display:flex;gap:6px;margin:4px 0 12px}
+.prog-pills{overflow-x:auto;scrollbar-width:none}
+.prog-pills::-webkit-scrollbar{display:none}
+.prog-pill{
+  flex:1;min-width:32px;padding:7px 0;border:1px solid transparent;border-radius:10px;
+  background:var(--surface-2);color:var(--label-3);font-size:13px;font-weight:600;
+  cursor:pointer;transition:background var(--fast),color var(--fast),box-shadow var(--fast),border-color var(--fast)
+}
+.prog-pill:active{background:var(--surface-3);transform:scale(.98)}
+.prog-pill.is-current{background:var(--acc);color:var(--on-acc);box-shadow:0 0 0 3px var(--acc-soft)}
+.prog-pill.is-selected:not(.is-current){background:var(--surface-3);border-color:var(--sep);color:var(--label)}
+.prog-pill .prog-pill-date{display:block;font-size:9px;font-weight:600;opacity:.75;margin-top:1px}
+.prog-pill.is-deload:not(.is-current):not(.is-selected){background:color-mix(in srgb,var(--orange) 14%,transparent);border-color:color-mix(in srgb,var(--orange) 34%,transparent);color:var(--orange)}
+.prog-pill.is-rest:not(.is-current):not(.is-selected){background:color-mix(in srgb,var(--red) 11%,transparent);border-color:color-mix(in srgb,var(--red) 30%,transparent);color:var(--red)}
+.prog-day-list{display:flex;flex-direction:column;gap:8px}
+.prog-day-row{border:1px solid var(--sep);border-radius:12px;overflow:hidden;background:var(--surface)}
+.prog-day-row.is-deload{background:color-mix(in srgb,var(--orange) 7%,transparent);border-color:color-mix(in srgb,var(--orange) 26%,transparent)}
+.prog-day-row.is-rest{background:color-mix(in srgb,var(--red) 6%,transparent);border-color:color-mix(in srgb,var(--red) 24%,transparent)}
+.prog-day-head{display:flex;align-items:center;gap:8px;padding:8px 12px 4px}
+.prog-day-date{font-size:11px}
+.prog-week-label.is-deload{color:var(--orange)}
+.prog-week-label.is-rest{color:var(--red)}
+.prog-empty-week.is-deload{color:var(--orange)}
+.prog-empty-week.is-rest{color:var(--red)}
+.prog-progress{padding:10px 12px 12px;border-top:1px solid var(--sep)}
+.prog-progress-table-wrap{width:100%;overflow-x:auto;overscroll-behavior-x:contain}
+.prog-progress-table{width:max-content;min-width:100%;border-collapse:collapse;font-size:12px}
+.prog-progress-table th{text-align:left;color:var(--label-3);font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:.4px;padding:4px 6px}
+.prog-progress-table td{padding:4px 6px;border-top:1px solid var(--sep);color:var(--label-2);white-space:nowrap}
+.prog-progress-name{color:var(--label);white-space:normal;min-width:120px}
+.prog-next{border:1px solid var(--acc-line);background:linear-gradient(135deg,color-mix(in srgb,var(--acc) 10%,transparent),color-mix(in srgb,var(--acc) 2%,transparent));border-radius:12px;margin-bottom:12px;overflow:hidden}
+.prog-next-toggle,.prog-session-toggle{display:flex;align-items:center;gap:10px;width:100%;padding:12px 14px;border:0;background:none;color:inherit;text-align:left;cursor:pointer}
+.prog-next-toggle:active,.prog-session-toggle:active{background:var(--surface-2)}
+.prog-next-toggle .grow,.prog-session-toggle .grow{flex:1;min-width:0}
+.prog-next-day{display:flex;flex-direction:column;align-items:center;gap:2px;min-width:42px;flex:none;color:var(--label-3);font-size:12px}
+.prog-next-day .tag{font-size:10.5px;text-transform:uppercase;padding:3px 7px}
+.prog-session-title{display:block;font-size:15px;font-weight:600;line-height:1.25;letter-spacing:-.009em}
+.prog-next .prog-session-title{font-size:17px}
+.prog-session-meta{display:block;margin-top:3px;color:var(--label-2);font-size:13px;line-height:1.25}
+.prog-chevron{width:16px;height:16px;flex:none;color:var(--label-3);transition:transform var(--fast) var(--ease),color var(--fast)}
+.prog-chevron.is-open{transform:rotate(90deg);color:var(--label-2)}
+.prog-exercises{display:none}
+.prog-exercises.is-open{display:block}
+.prog-exercise-row{display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px;padding:6px 14px;border-top:1px solid var(--sep)}
+.prog-exercise-name{flex:1 1 55%;min-width:0;color:var(--label);font-size:13px;font-weight:500;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.prog-exercise-meta{margin-left:auto;display:flex;align-items:center;gap:8px;flex:none;min-width:0}
+.prog-exercise-target{flex:none;color:var(--acc);font-size:12px;font-weight:600;line-height:1.3;white-space:nowrap}
+.prog-exercise-note{min-width:0;display:block;font-size:11px;line-height:1.3;color:var(--label-3);overflow-wrap:anywhere}
+/* superset group (mockup C): bracketed A1/A2/… group card */
+.prog-ssg{display:flex;flex-direction:column;gap:6px;margin:8px 12px;padding:9px 10px;background:color-mix(in srgb,var(--acc) 5%,transparent);border:1px solid color-mix(in srgb,var(--acc) 20%,transparent);border-radius:12px}
+.prog-ssg-head{display:flex;align-items:center;gap:8px}
+.prog-ssg-head .tag{margin:0}
+.prog-ssg-rest{margin-left:auto;font-size:10.5px;color:var(--label-3)}
+.prog-ssg-bracket{border-left:2px solid color-mix(in srgb,var(--acc) 55%,transparent);border-top:2px solid color-mix(in srgb,var(--acc) 55%,transparent);border-bottom:2px solid color-mix(in srgb,var(--acc) 55%,transparent);border-top-left-radius:10px;border-bottom-left-radius:10px;padding:2px 0 2px 10px}
+.prog-ssg-row{display:flex;flex-direction:row;flex-wrap:wrap;align-items:center;gap:8px;padding:4px 2px;background:none!important}
+.prog-ssg-row + .prog-ssg-row{border-top:1px solid var(--sep-op)}
+.prog-ssg-row .prog-exercise-name{min-width:0;flex:1;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.prog-ssg-label{font-size:11px;font-weight:800;color:var(--acc);width:22px;flex:none}
+.prog-ssg-target{flex:none;color:var(--acc);font-size:12px;font-weight:600;white-space:nowrap}
+.prog-ssg-notes{font-size:10.5px;color:var(--label-3);padding:0 2px 2px 34px;line-height:1.4}
+/* deep-linked exercise flash in the routine editor */
+.ex-row-flash{animation:exflash 1.8s ease-out}
+@keyframes exflash{0%,55%{background:color-mix(in srgb,var(--acc) 20%,transparent)}100%{background:transparent}}
+.prog-week-label{padding:0 2px 8px;color:var(--label-2);font-size:13px;font-weight:600}
+.prog-session-list{border:1px solid var(--sep);border-radius:12px;overflow:hidden}
+.prog-session{background:var(--surface)}
+.prog-session+.prog-session{border-top:1px solid var(--sep)}
+.prog-session-toggle{min-height:62px}
+.prog-session-day{flex:none;text-transform:none}
+.prog-status{display:inline-flex;align-items:center;border-radius:999px;padding:3px 9px;font-size:11px;font-weight:700;white-space:nowrap}
+.prog-status.is-done{background:var(--surface-2);color:var(--label-3)}
+.prog-status.is-next{background:color-mix(in srgb,var(--blue) 16%,transparent);color:var(--blue)}
+.prog-status.is-planned{background:var(--surface-2);color:var(--label-2)}
+.prog-empty-week{padding:12px 2px 14px}
+.programme-completed-main{display:flex;align-items:center;gap:10px;cursor:pointer}
+.programme-completed-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid var(--sep)}
+.programme-completed-actions .btn{flex:none}
+
+/* Compact pickup controls keep the explanatory copy inside the card at phone widths. */
+.week-mode-list{display:flex;flex-direction:column;gap:6px}
+.week-mode-row{background:var(--surface);border-radius:var(--r-card);overflow:hidden}
+.week-mode-toggle{display:flex;align-items:center;gap:8px;width:100%;min-height:48px;padding:8px 12px;text-align:left}
+.week-mode-toggle strong{flex:1;min-width:0}
+.week-mode-toggle .icn{color:var(--label-3);font-size:14px}
+.week-mode-options{padding:0 10px 10px}
+.pickup-target-head{display:flex;align-items:flex-start;gap:8px;min-width:0}
+.pickup-target-copy{min-width:0;flex:1;overflow-wrap:anywhere}
+.pickup-target-copy strong{display:block;line-height:1.3}
+.pickup-target-head .btn{flex:none;max-width:42%;white-space:normal}
+.pickup-suggestion-copy{min-width:0;overflow-wrap:anywhere;line-height:1.3}
+.pickup-fixed-target{display:flex;align-items:baseline;gap:7px;margin-top:8px;padding-top:8px;border-top:1px solid var(--sep)}
+.pickup-fixed-value{font-weight:600;color:var(--acc);font-variant-numeric:tabular-nums}
+
 /* ---------------------------------------------------------------- chips -- */
 .chips{
   display:flex;gap:7px;overflow-x:auto;padding-bottom:2px;
   scrollbar-width:none;-webkit-overflow-scrolling:touch;
+  /* Sticky-swipe fix: tell the browser horizontal panning is intended so the first
+     finger move scrolls immediately instead of being held for a potential tap/zoom. */
+  touch-action:pan-x;overscroll-behavior-x:contain;
+}
+.pweek{
+  display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;padding-bottom:6px;
+  touch-action:pan-y;
+}
+.pday{min-width:0;overflow:hidden;cursor:pointer;padding:6px 2px 8px}
+.pday-month{font-size:9px}
+.pday.today .pday-month{color:var(--on-acc)}
+.pday-tags{
+  display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;
+  gap:3px;margin-top:6px;min-height:44px;min-width:0;
+}
+.pday-tag{
+  display:block;width:100%;max-width:100%;min-width:0;margin-right:0;padding:2px 5px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;font-size:10px;
 }
 .chips::-webkit-scrollbar{display:none}
 .chip{
@@ -550,12 +672,30 @@ h4.sec{
   display:flex;align-items:center;gap:8px;padding:0 0 6px;
   font-size:11px;color:var(--label-3);font-weight:500;text-transform:uppercase;letter-spacing:.045em;
 }
+.phase-divider{display:flex;align-items:center;gap:8px;padding:10px 0 4px;color:var(--label-3);font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase}
+.phase-divider .phase-line{height:1px;flex:1;background:var(--sep)}
+.phase-divider .phase-label{white-space:nowrap}
+.phase-divider .phase-settings{width:26px;height:26px;padding:0;font-size:14px;color:var(--label-3)}
+.phase-divider.warmup .phase-label{color:var(--orange)}
+.setbtns .btn{flex:1}
+/* Warm-up phase buttons share the warm-up label colour; the set-button row stays on one
+   line on small screens by compacting the buttons instead of wrapping. */
+.btn.warmbtn { color: var(--orange) }
+.btn.warmbtn:disabled { color: color-mix(in srgb, var(--orange) 55%, var(--label-3)) }
+@media (max-width: 480px) {
+  .setbtns { gap: 4px; }
+  .setbtns .btn { padding: 6px 7px; font-size: 11px; }
+}
+
+.phase-divider.work .phase-label{color:var(--acc)}
 .sethead .n-sp{width:24px;flex:none}
 .sethead .w-sp{flex:1.4;text-align:center}
 .sethead .r-sp{flex:1;text-align:center}
 .sethead .eff-sp{text-align:center}
 .sethead .ck-sp{width:30px;flex:none}
-.setrow{display:flex;align-items:center;gap:8px;padding:7px 0;position:relative}
+.setgroup{position:relative}
+.setrow{display:flex;align-items:center;gap:8px;padding:7px 0;position:relative;z-index:1}
+.setrow .stp{min-width:0}
 .setrow+.setrow::before{
   content:'';position:absolute;left:32px;right:0;top:0;height:var(--hair);background:var(--sep);
 }
@@ -563,14 +703,30 @@ h4.sec{
 .setph::after{content:'';flex:1;height:1px;background:var(--sep)}
 .setsep{height:1px;background:var(--sep);margin:9px 0}
 .setrow .n{
-  width:24px;height:24px;border-radius:50%;background:var(--surface-2);color:var(--label-2);
+  width:24px;height:24px;border-radius:50%;background:color-mix(in srgb,var(--acc) 28%,var(--surface-2));color:var(--label-2);
   display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:500;flex:none;
   transition:background var(--fast),color var(--fast);
 }
+.amrap-role-control{
+  min-width:44px;width:max-content;max-width:calc(100% - 32px);min-height:20px;height:20px;margin:0 0 1px 32px;padding:0 4px;display:flex;align-items:center;
+  color:var(--label-3);font-size:11px;line-height:16px;text-align:left;background:transparent;border:0;box-shadow:none;
+  white-space:nowrap;transition:color var(--fast);
+}
+.amrap-role-control.role-amrap,.amrap-role-control.role-progression{color:var(--acc)}
+.amrap-role-row{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;margin:0 0 1px 32px;min-height:24px;color:var(--acc)}
+.amrap-role-row .amrap-role-control{margin:0;flex:none}
+.amrap-target-inline{display:flex;align-items:center;gap:2px;min-height:24px;color:var(--acc);font-size:11px;line-height:16px;white-space:nowrap}
+.amrap-target-inline .amrap-target-value{padding:1px 5px;border:0;border-radius:4px;font-variant-numeric:tabular-nums;color:var(--acc)}
+.amrap-target-inline button{width:30px;height:24px;padding:0;display:flex;align-items:center;justify-content:center;color:var(--acc);background:transparent;border:0;border-radius:4px}
+.amrap-target-inline button:active{background:transparent}
+.amrap-target-inline button:focus-visible,.amrap-role-control:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 .setrow .stp.w{flex:1.4;min-width:0}
 .setrow .stp.r{flex:1;min-width:0}
 .setrow .stp.eff{flex:1.1;min-width:0}
 .setrow .stp button{width:32px;height:40px}
+.setrow.warmup .n{background:color-mix(in srgb,var(--orange) 28%,var(--surface-2))}
+.phase-summary{display:block;margin-bottom:3px}
+.phase-summary b{color:var(--label-2);font-weight:600}
 /* a 3rd stepper (RIR) needs narrower buttons and a tighter row gap to fit next to weight+reps
    on narrow phones, same technique as the exercise-config sheet's three-steppers-in-a-row
    (.cfgrow below) — RIR's own value is short ("1.5") so its buttons shrink the most, weight/reps
@@ -586,12 +742,26 @@ h4.sec{
 .setrow.done .n{background:var(--acc);color:var(--on-acc)}
 .setrow.done{opacity:.45}
 /* why the next target is what it is (issue #17) */
+.last-performance{
+  margin:5px 0 6px;padding:6px 8px;border-radius:8px;background:var(--surface-2);
+  color:var(--label-2);font-size:12px;line-height:1.35;min-width:0;
+}
+.last-performance-summary{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;min-width:0}
+.last-performance-label{color:var(--label-3);font-weight:600;white-space:nowrap}
+.last-performance-value{min-width:0;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.last-performance-toggle{margin-left:auto;padding:1px 0;border:0;background:none;color:var(--acc);font:inherit;white-space:nowrap;cursor:pointer}
+.last-performance-list{display:grid;gap:5px;margin-top:6px;padding-top:6px;border-top:1px solid var(--sep)}
+.last-performance-session{padding:4px 0;font-variant-numeric:tabular-nums}
+.last-performance-session-head{display:flex;justify-content:space-between;gap:8px;color:var(--label-3)}
+.last-performance-session-head span:last-child{color:var(--yellow);font-weight:700}
+.last-performance-metric{color:var(--label-3);font-size:11px;margin-top:2px}
 .progline{
   display:flex;align-items:flex-start;gap:7px;margin:6px 0 2px;
-  font-size:13px;line-height:1.38;color:var(--acc);
+  width:100%;padding:0;border:0;background:transparent;text-align:left;font:inherit;font-size:13px;line-height:1.38;color:var(--acc);cursor:pointer;
 }
 .progline.warn{color:var(--yellow)}
 .progline svg{flex:none;margin-top:2px}
+.progline:focus-visible{outline:2px solid var(--acc);outline-offset:3px;border-radius:4px}
 
 /* start a timed set (issue #16) — sits where you'd otherwise reach for the checkbox */
 .setrow .setgo{
@@ -609,6 +779,10 @@ h4.sec{
 .cfgrow .stp-l{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 /* --- rest timer --- */
+.sr-only{
+  position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+  clip:rect(0,0,0,0);white-space:nowrap;border:0;
+}
 #timer{
   position:fixed;left:12px;right:12px;bottom:calc(88px + var(--sab));z-index:60;
   /* nearly opaque: the set rows underneath were reading through the old 82% and made the
@@ -627,17 +801,31 @@ h4.sec{
 /* rest variant: −15/+15/Skip and the clock won't share one line on a phone, so the clock and
    bar take the top row and the controls take their own. The work timer keeps a single row —
    it only ever has two buttons. */
-#timer.rest{flex-direction:column;align-items:stretch;gap:10px}
-#timer.rest .head{display:flex;align-items:center;gap:12px}
-#timer.rest .acts{display:flex;align-items:center;gap:8px}
-#timer.rest .acts .btn{padding-top:11px;padding-bottom:11px}   /* sweaty hands, mid-set */
-#timer.rest .acts .skip{margin-left:auto;min-width:84px}
+#timer.rest,#timer.ready{flex-direction:column;align-items:stretch;gap:10px}
+#timer.rest .head,#timer.ready .head{display:flex;align-items:center;gap:12px}
+/* The head row must stay ONE line at any width/font: the clock never wraps and the
+   exercise label truncates instead of squeezing it (overtime kept the popup stable). */
+#timer .head .t{white-space:nowrap;flex-shrink:0}
+#timer .head .lbl{flex:0 1 auto;min-width:0;max-width:45%}
+#timer .head .bar{flex:1 1 24px;min-width:24px}
+#timer.rest .acts,#timer.ready .acts{display:flex;align-items:center;gap:8px}
+#timer.rest .acts .btn,#timer.ready .acts .btn{padding-top:11px;padding-bottom:11px}   /* sweaty hands, mid-set */
+#timer.rest .acts .skip,#timer.ready .acts .skip{margin-left:auto;min-width:84px}
+/* Finished states (Ready! / Time's up!): the two actions share the row evenly. */
+#timer.ready .acts .btn{flex:1;justify-content:center}
 /* work timer (issue #16): the same bar doing the opposite job — outlined and tinted so a
    glance tells "you are holding this" apart from "you are recovering". */
 #timer.working{border:var(--hair) solid var(--acc)}
 #timer.working .t{color:var(--acc)}
 #timer.working .grow{flex:1;min-width:0}
 #timer.working .lbl{
+  font-size:12px;color:var(--label-2);margin-bottom:5px;text-transform:capitalize;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+#timer.prepping{border:var(--hair) solid var(--orange)}
+#timer.prepping .t{color:var(--orange)}
+#timer.prepping .grow{flex:1;min-width:0}
+#timer.prepping .lbl{
   font-size:12px;color:var(--label-2);margin-bottom:5px;text-transform:capitalize;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
@@ -789,6 +977,9 @@ h4.sec{
 .hm-fatigue .hm-c.l3{background:var(--orange)}
 .hm-fatigue .hm-c.l2{background:var(--yellow)}
 /* Strength view: top band pops gold (owner tweak 2026-08-06) */
+.hm-strength .bm-m.l1{fill:color-mix(in srgb,var(--yellow) 20%,var(--bm-base))}
+.hm-strength .bm-m.l2{fill:color-mix(in srgb,var(--yellow) 44%,var(--bm-base))}
+.hm-strength .bm-m.l3{fill:color-mix(in srgb,var(--yellow) 70%,var(--bm-base))}
 .hm-strength .bm-m.l4{fill:var(--yellow);filter:drop-shadow(0 0 1.5px var(--yellow))}
 .hm-strength .hm-c.l4{background:var(--yellow)}
 
@@ -881,11 +1072,62 @@ h4.sec{
   color:var(--acc);margin:8px 0 5px 4px;display:flex;align-items:center;gap:5px;
 }
 .ss-label .icn{font-size:13px}
+.ss-heading{justify-content:space-between;gap:6px}
+.ss-heading-button{display:flex;align-items:center;gap:5px;min-width:0;padding:0;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.ss-heading-button .small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ss-heading-cog{width:28px;height:28px;flex:none;font-size:14px}
+.active-workout-editor-member{align-items:flex-start;flex-wrap:wrap}
+.active-workout-editor-actions{display:flex;align-items:center;gap:4px;flex-wrap:wrap;justify-content:flex-end}
+.active-workout-editor-member > .btn{flex:none}
+.workout-direct-actions{justify-content:center;gap:6px;flex-wrap:wrap}
+.amrap-target-controls .btn{flex:none}
+@media (max-width:375px){
+  .active-workout-editor-member{gap:5px}
+  .active-workout-editor-member .grow{flex-basis:100%}
+  .active-workout-editor-actions{justify-content:flex-start}
+  .active-workout-editor-actions .btn,.active-workout-editor-member > .btn{padding:5px 7px;font-size:12px}
+  .workout-direct-actions .btn,.amrap-target-controls .btn{padding:6px 8px;font-size:12px}
+}
 .item.in-ss{box-shadow:inset 3px 0 0 var(--acc)}
+.routine-list .item.in-ss{position:relative;padding-left:15px}
+.routine-list .item.in-ss::before{content:"";position:absolute;left:5px;top:10px;bottom:10px;width:2px;border-radius:2px;background:var(--acc-line)}
+.routine-list .item.in-ss+.item.in-ss::before{top:-8px}
+.routine-note{display:block;margin-top:4px;line-height:1.35;overflow-wrap:anywhere}
+.routine-list{position:relative}
+.routine-drag-row{
+  position:relative;z-index:0;touch-action:pan-y;-webkit-touch-callout:none;
+  transition:transform 160ms var(--ease);
+}
+.routine-drag-row .item{
+  transition:background var(--fast),transform 140ms var(--ease),box-shadow 140ms var(--ease),opacity 140ms var(--ease);
+}
+.routine-drag-row.is-dragging{z-index:3;transition:none;will-change:transform}
+.routine-drag-row.is-dragging .item{
+  transform:scale(1.02);opacity:.97;cursor:grabbing;
+  box-shadow:0 12px 28px rgba(0,0,0,.28),0 2px 7px rgba(0,0,0,.2);
+}
+.routine-list.is-reordering{cursor:grabbing}
+.routine-drop-indicator{
+  position:absolute;left:4px;right:4px;height:3px;border-radius:3px;
+  background:var(--acc);box-shadow:0 0 0 1px color-mix(in srgb,var(--acc) 24%,transparent),0 0 10px color-mix(in srgb,var(--acc) 42%,transparent);
+  transform:translateY(-50%);z-index:5;pointer-events:none;
+}
+.workout-swipe-transition{
+  transition:transform 200ms cubic-bezier(.25,.1,.25,1);will-change:transform;
+}
+.workout-swipe-stack{display:grid;isolation:isolate}
+.workout-swipe-stack>.workout-swipe-peek,
+.workout-swipe-stack>.workout-swipe-card{grid-area:1/1;min-width:0}
+.workout-swipe-peek{
+  position:relative;z-index:1;pointer-events:none;
+}
+.workout-swipe-card{position:relative;z-index:2;background:var(--bg)}
 .ss-card{
   border-radius:var(--r-lg);padding:14px;
   background:var(--surface);box-shadow:inset 0 0 0 1.5px var(--acc-line);
 }
+.ss-card .ss-ex+.ss-ex{border-top:1px solid var(--acc-line);margin-top:12px;padding-top:12px}
+.ss-card .ss-amp{display:none}
 .ss-hd{
   font-size:12px;font-weight:600;color:var(--acc);margin-bottom:12px;
   text-align:center;display:flex;align-items:center;justify-content:center;gap:5px;
@@ -904,6 +1146,12 @@ h4.sec{
 .today-row .ttl{
   font-weight:500;font-size:17px;line-height:1.25;text-transform:capitalize;
   letter-spacing:-.012em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;
+}
+.today-row .ttl.home-routine-list{
+  white-space:normal;overflow:visible;text-overflow:clip;
+}
+.today-row .ttl.home-routine-list .home-routine{
+  display:block;overflow-wrap:anywhere;
 }
 
 /* --------------------------------------------------- desktop (≥1000px) --- */
@@ -931,4 +1179,35 @@ h4.sec{
   #timer.rest .head{flex:1;min-width:0}
   .exmedia img{height:380px}
   .hm-wrap{display:flex;flex-direction:column;align-items:center}
+}
+
+@media (prefers-reduced-motion: reduce){
+  *, *::before, *::after{
+    animation-duration:.01ms !important;
+    animation-iteration-count:1 !important;
+    scroll-behavior:auto !important;
+    transition-duration:.01ms !important;
+  }
+}
+
+@media (max-width: 480px){
+  #app{padding-bottom:calc(156px + var(--sab))}
+  .prog-exercise-meta{flex-wrap:nowrap}
+  .prog-exercise-target{flex:none;white-space:nowrap}
+  .prog-exercise-note{flex:1 1 100%;padding-left:0}
+  .prog-next-toggle,.prog-session-toggle{padding-left:11px;padding-right:11px;gap:8px}
+  .prog-status{padding-left:7px;padding-right:7px}
+  .pickup-target-head{flex-wrap:wrap}
+  .pickup-target-head .btn{margin-left:auto;max-width:none}
+  .pickup-target-row .row{align-items:flex-start!important;flex-wrap:wrap}
+  .pickup-target-row .pickup-suggestion-copy{flex:1 1 100%;padding-left:4px}
+  .programme-completed-actions{margin-top:8px}
+  .programme-completed-actions .small{flex:1;min-width:0}
+  .ss-card{padding:10px}
+  .ss-card .exmedia.compact img{height:96px}
+  .sethead,.setrow{gap:5px}
+  .setrow .stp button{width:28px}
+  .setrow .stp.w,.sethead .w-sp{flex:1.2}
+  .setrow .stp.r,.sethead .r-sp{flex:1}
+  .setrow .stp.eff,.sethead .eff-sp{flex:.82}
 }
