@@ -1,7 +1,7 @@
 // Pure helpers over the state object S (ported 1:1 from the vanilla app).
 import { todayISO, isoOf, weekKey, fmtNum } from './format.js'
 import { isCardio, isBodyweightEq } from './exercises.js'
-import { phaseForSet, modeForSet, modeForEntry, isWarmupRow, normalizeMode } from './workout-model.js'
+import { normalizePhase, modeForSet, modeForEntry, isWarmupRow, normalizeMode, setVolume, historyUnitCompatible, historyEntryCompatible } from './workout-model.js'
 const objectOf = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {}
 // Completed-state-independent work rows whose authoritative mode matches the requested mode.
 const workRowsForMode = (entry = {}, mode = 'reps') => {
@@ -9,7 +9,7 @@ const workRowsForMode = (entry = {}, mode = 'reps') => {
   const target = objectOf(source.target || source)
   const expectedMode = normalizeMode(mode, 'reps')
   return (Array.isArray(source.sets) ? source.sets : [])
-    .filter(set => phaseForSet(set) === 'work' && modeForSet(set, target) === expectedMode)
+    .filter(set => !isWarmupRow(set) && modeForSet(set, target) === expectedMode)
 }
 // i18n-core, not i18n: this file is imported by mcp/, which is plain Node with no Vite and no
 // React. i18n.js is the Vite half — import.meta.glob over the locale packs, useSyncExternalStore
@@ -401,7 +401,7 @@ export function metricModeForEntry(entry, fallback = null) {
 export function bestWeightForEntry(entry = {}) {
   const target = entry.target || entry
   const workRows = Array.isArray(entry.sets)
-    ? entry.sets.filter(s => phaseForSet(s) === 'work')
+    ? entry.sets.filter(s => !isWarmupRow(s))
     : []
   const repsRows = metricRowsForEntry(entry, 'reps')
   if (!repsRows.length) {
@@ -427,4 +427,43 @@ export function bestWeightForEntry(entry = {}) {
   if (parentMode === 'reps' && !hasNonRepsWorkRow && !hasWarmupRow
     && Number.isFinite(topWeight) && topWeight > best) best = topWeight
   return best
+}
+
+export function volumeByPhase(workout, expectedUnit = null) {
+  const out = { warmup: 0, work: 0 }
+  if (expectedUnit && !historyUnitCompatible(workout, expectedUnit)) return out
+  ;(workout?.entries || []).forEach(entry => {
+    if (expectedUnit && !historyEntryCompatible(entry, expectedUnit, workout?.unit)) return
+    ;(entry?.sets || []).forEach(set => {
+      if (!set.done) return
+      const phase = normalizePhase(set?.phase, set?.warmup ? 'warmup' : 'work')
+      out[phase] += setVolume(set, entry.target || entry, expectedUnit)
+    })
+  })
+  return out
+}
+
+export function setsByPhase(workout, expectedUnit = null) {
+  const out = { warmup: 0, work: 0 }
+  if (expectedUnit && !historyUnitCompatible(workout, expectedUnit)) return out
+  ;(workout?.entries || []).forEach(entry => {
+    if (expectedUnit && !historyEntryCompatible(entry, expectedUnit, workout?.unit)) return
+    ;(entry?.sets || []).forEach(set => {
+      if (!set.done) return
+      const phase = normalizePhase(set?.phase, set?.warmup ? 'warmup' : 'work')
+      out[phase] += 1
+    })
+  })
+  return out
+}
+
+export function entryVolumeByPhase(entry, expectedUnit = null, inheritedUnit = null) {
+  const out = { warmup: 0, work: 0 }
+  if (expectedUnit && !historyEntryCompatible(entry, expectedUnit, inheritedUnit)) return out
+  ;(entry?.sets || []).forEach(set => {
+    if (!set.done) return
+    const phase = normalizePhase(set?.phase, set?.warmup ? 'warmup' : 'work')
+    out[phase] += setVolume(set, entry.target || entry, expectedUnit)
+  })
+  return out
 }
