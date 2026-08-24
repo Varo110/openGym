@@ -7,7 +7,7 @@ import {
   setLabel, exLine, muscleName, policyName, friendlyDuration, ratio, muscleOrder
 } from './labels.js'
 import {
-  modeOf, workoutVolume, setsDone, effectiveRoutine, effectiveRoutineId
+  modeOf, workoutVolume, setsDone, effectiveRoutineIds, effectiveRoutines
 } from '../../frontend/src/lib/history.js'
 import { EXIDX, exOr } from '../../frontend/src/lib/exercises.js'
 import {
@@ -42,10 +42,42 @@ function entryView(e, S) {
   }
 }
 
+// MCP is a read-only compatibility boundary. Older state files may have profile-local weighted
+// sets with no per-set unit; project only those legacy rows into the profile/workout unit so the
+// shared history helpers can validate them. Explicit or mixed provenance is left untouched and
+// therefore remains fail-closed. The projection also applies MCP's reporting rep cap.
+function reportingState(S) {
+  const profileUnit = S?.unit || 'kg'
+  return {
+    ...S,
+    workouts: (S.workouts || []).map(w => ({
+      ...w,
+      entries: (w.entries || []).map(e => {
+        const inheritedUnit = e.unit || w.unit || profileUnit
+        return {
+          ...e,
+          sets: (e.sets || [])
+            .filter(s => {
+              const reps = Number(s.r)
+              return !Number.isFinite(reps) || reps <= REP_CAP
+            })
+            .map(s => {
+              const hasUnit = s.unit != null && s.unit !== ''
+                || s.weightUnit != null && s.weightUnit !== ''
+                || s.loadUnit != null && s.loadUnit !== ''
+              return Number(s.w) > 0 && !hasUnit ? { ...s, unit: inheritedUnit } : s
+            })
+        }
+      })
+    }))
+  }
+}
+
 // Best estimate per exercise, mirroring the UI's PR table: every eligible set across history, biggest wins.
 function prTable(S, formula) {
+  const metrics = reportingState(S)
   const byId = new Map()
-  for (const w of (S.workouts || [])) {
+  for (const w of (metrics.workouts || [])) {
     for (const e of (w.entries || [])) {
       for (const s of (e.sets || [])) {
         if (!s.done) continue
@@ -134,7 +166,7 @@ export const getRoutine = {
 /** get_week_plan — what's scheduled each weekday + today. */
 export const getWeekPlan = {
   name: 'get_week_plan',
-  description: 'Show the user\'s weekly plan: which routine (if any) is assigned to each weekday, keyed by JS getDay() (Sunday=0, Monday=1, … Saturday=6 — the same convention the openGym state file uses). Also reports today\'s date and what routine applies today, accounting for one-off overrides the user may have set for a specific date (a "rest" override cancels the day).',
+  description: 'Show the user\'s weekly plan: which routine (if any) is assigned to each weekday, keyed by JS getDay() (Sunday=0, Monday=1, … Saturday=6 — the same convention the openGym state file uses). Also reports today\'s date and every routine that applies today, accounting for one-off overrides the user may have set for a specific date (a "rest" override cancels the day). Singular today_routine_id/name fields remain as the first routine for compatibility.',
   schema: {},
   handler: () => {
     const S = getState()
@@ -142,6 +174,8 @@ export const getWeekPlan = {
     const today = new Date()
     const isoToday = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0')
     const todayWd = today.getDay()
+    const todayRoutineIds = effectiveRoutineIds(S, isoToday)
+    const todayRoutines = effectiveRoutines(S, isoToday)
     return {
       today: isoToday,
       weekdays: [0, 1, 2, 3, 4, 5, 6].map(d => {
@@ -159,8 +193,12 @@ export const getWeekPlan = {
           override_for_today_or_null: overrideForToday
         }
       }),
-      today_routine_id: effectiveRoutineId(S, isoToday),
-      today_routine_name: effectiveRoutine(S, isoToday)?.name || null
+      // Keep the original singular fields for existing MCP clients; the plural fields expose
+      // every startable plan when a date has a multi-routine override.
+      today_routine_ids: todayRoutineIds,
+      today_routine_names: todayRoutines.map(r => r.name),
+      today_routine_id: todayRoutineIds[0] || null,
+      today_routine_name: todayRoutines[0]?.name || null
     }
   }
 }
@@ -318,8 +356,9 @@ export const estimate1rm = {
     const f = formula || DEFAULT_FORMULA
     if (exercise_id) {
       const ex = exOr(exercise_id)
-      const best = best1RM(S, exercise_id, f)
-      const series = e1rmSeries(S, exercise_id, f)
+      const metrics = reportingState(S)
+      const best = best1RM(metrics, exercise_id, f)
+      const series = e1rmSeries(metrics, exercise_id, f)
       // A null best has two very different causes: never trained, or trained only above the
       // rep cap. Without saying which, an exercise logged for years at 15 reps reads as "no
       // records for calf raise" — a confident statement about the opposite of the truth.
