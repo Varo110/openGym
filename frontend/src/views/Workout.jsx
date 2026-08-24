@@ -10,12 +10,13 @@ import { t } from '../lib/i18n.js'
 import { api } from '../lib/api.js'
 import { setProgressHighWater, supersetFlowStep } from '../lib/supersetFlow.js'
 import Media from '../components/Media.jsx'
-import { startFlow, exercisePicker, exConfigSheet, exerciseDetailSheet, topWeightSheet, finishWorkout, workoutCompleteSheet, confirmSheet } from '../sheets.jsx'
+import { startFlow, exercisePicker, exConfigSheet, exerciseDetailSheet, topWeightSheet, finishWorkout, workoutCompleteSheet, confirmSheet, programmeExitSheet } from '../sheets.jsx'
 import Icon from '../components/Icon.jsx'
 import { Button, Check, NumberField } from '../components/ui.jsx'
 import { nextPrescription, applyPrescription } from '../lib/progression.js'
 import { glyphOf } from '../lib/glyphs.js'
 import { isWarmupRow } from '../lib/workout-model.js'
+import { isProgrammeSession } from '../lib/partial.js'
 
 /* ---------- start chooser (no active workout) ---------- */
 function StartChooser() {
@@ -222,8 +223,12 @@ function ActiveWorkout() {
   const setField = (idx, i, field, v) => mutEntry(idx, e => {
     if (v == null) delete e.sets[i][field]; else e.sets[i][field] = v
     // Changing a weight cascades to the following sets of the same phase, so a
-    // heavier bar carries through the set instead of retyping every row.
+    // heavier bar carries through the set instead of retyping every row. It only
+    // cascades on fixed-weight rows: percentage prescriptions are driven by the
+    // plan and must stay untouched, and completed sets are never rewritten.
     if (field === 'w') {
+      const cfg = e.target || e
+      if (cfg.weightPrescription?.kind === 'percentage') return
       e.sets = cascadeWeight(e.sets, i, v)
     }
   })
@@ -288,9 +293,13 @@ function ActiveWorkout() {
   // behave exactly as they do for a reps set.
   const startTimed = (idx, i) => {
     const e = A.entries[idx]
+    const workoutId = A.id
     useUI.getState().startWork(e.sets[i].sec || 45, exOr(e.id).n, elapsed => {
+      const active = useStore.getState().S.active
+      if (!active || active.id !== workoutId || !active.entries?.[idx]?.sets?.[i]) return
       mutEntry(idx, en => { en.sets[i].sec = elapsed })
-      if (!useStore.getState().S.active.entries[idx].sets[i].done) toggle(idx, i)
+      const current = useStore.getState().S.active
+      if (current?.id === workoutId && current.entries?.[idx]?.sets?.[i] && !current.entries[idx].sets[i].done) toggle(idx, i)
     })
   }
 
@@ -298,6 +307,17 @@ function ActiveWorkout() {
     const m = modeAt(idx)
     const cardioEntry = m === 'cardio'
     const isLastUnit = unitIdx >= units.length - 1
+    // Any set toggle is a lifecycle boundary: a finished timed hold is a completed planned set,
+    // so record it before invalidating timer callbacks. The callback re-enters this function;
+    // if it completed the exact unchecked row that was clicked, the outer invocation must not
+    // flip that row back off.
+    const wasDone = A.entries[idx]?.sets?.[i]?.done
+    if (useUI.getState().work?.done) {
+      useUI.getState().logWorkPlanned()
+      if (!wasDone && useStore.getState().S.active?.entries?.[idx]?.sets?.[i]?.done) return
+    } else {
+      useUI.getState().stopTimers()
+    }
     let askTop = false, exJustDone = false, workoutDone = false, checked = false
     mutEntry(idx, e => {
       e.sets[i].done = !e.sets[i].done
@@ -385,9 +405,23 @@ function ActiveWorkout() {
     }
   }, [])
 
+  const leaveWorkout = () => {
+    if (isProgrammeSession(A)) {
+      programmeExitSheet()
+      return
+    }
+    confirmSheet({
+      title: t('Discard workout?'),
+      message: t('The sets you logged in this session will be lost.'),
+      confirmText: t('Discard'),
+      danger: true,
+      onConfirm: () => { update(s => { s.active = null }); stopRest(); nav('/home') }
+    })
+  }
+
   return <div className="narrow">
     <div className="hdr">
-      <button className="iconbtn" aria-label={t('Discard')} onClick={() => confirmSheet({ title: t('Discard workout?'), message: t('The sets you logged in this session will be lost.'), confirmText: t('Discard'), danger: true, onConfirm: () => { update(s => { s.active = null }); stopRest(); nav('/home') } })}><Icon name="xmark" /></button>
+      <button className="iconbtn" aria-label={t('Discard')} onClick={leaveWorkout}><Icon name="xmark" /></button>
       <div style={{ textAlign: 'center' }}><div style={{ fontWeight: 600 }}>{A.name}</div><div className="sub"><Elapsed start={A.start} /> · {t('{0} sets', done + '/' + total)}</div></div>
       <button className="iconbtn" style={{ color: 'var(--acc)' }} aria-label={t('Finish')} onClick={finishWorkout}><Icon name="check" /></button>
     </div>

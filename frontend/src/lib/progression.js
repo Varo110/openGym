@@ -17,8 +17,8 @@
 // So a session that fell apart can never advance the load as though it had succeeded.
 
 import { modeOf, repStep } from './history.js'
-import { EXIDX } from './exercises.js'
 import { isWarmupRow } from './workout-model.js'
+import { EXIDX } from './exercises.js'
 
 export const POLICIES = ['off', 'linear', 'greyskull', 'double', 'time']
 
@@ -102,27 +102,26 @@ function deloadTo(cur, step) {
 export function readSession(entry, fallback) {
   const target = (entry && entry.target) || fallback || {}
   const mode = modeOf({ ...target, id: entry && entry.id })
-  // Warm-up rows are prep, not the session: one filtered read beats guarding every consumer
-  // below (an undone warm-up otherwise poisons `ok` forever and its reps drag `low`/`count`).
-  const sets = ((entry && entry.sets) || []).filter(s => !isWarmupRow(s))
-  const planned = target.sets || sets.length
-  const enough = sets.length >= planned
+  const sets = (entry && entry.sets) || []
+  const workSets = sets.filter(s => !isWarmupRow(s))
+  const planned = target.sets || workSets.length
+  const enough = workSets.length >= planned
 
   if (mode === 'time') {
     const goal = target.sec || 0
-    const held = sets.map(s => (s.done ? (s.sec || 0) : 0))
+    const held = workSets.map(s => (s.done ? (s.sec || 0) : 0))
     return {
       mode, goal, held,
-      weight: Math.max(0, ...sets.filter(s => s.done).map(s => s.w || 0)),
+      weight: Math.max(0, ...workSets.filter(s => s.done).map(s => s.w || 0)),
       best: Math.max(0, ...held),
       ok: goal > 0 && enough && held.length > 0 && held.every(h => h >= goal)
     }
   }
   const goal = target.reps || 0
-  const reps = sets.map(s => (s.done ? (s.r || 0) : 0))
+  const reps = workSets.map(s => (s.done ? (s.r || 0) : 0))
   return {
     mode, goal, reps,
-    weight: Math.max(0, ...sets.filter(s => s.done).map(s => s.w || 0)),
+    weight: Math.max(0, ...workSets.filter(s => s.done).map(s => s.w || 0)),
     count: reps.length,                                   // the dimension bodyweight work grows (#33)
     low: reps.length ? Math.min(...reps) : 0,
     amrap: reps.length ? reps[reps.length - 1] : 0,       // Greyskull's final set
@@ -253,25 +252,17 @@ export function nextPrescription(S, cfg, routine) {
 export function applyPrescription(sets, p) {
   if (!p || p.kind === 'off' || p.kind === 'first') return sets
   const out = sets.map(s => {
-    // Never rewrite a logged set, and never rewrite a warm-up: the prescription speaks to
-    // the work rows only (a ticked warm-up falling through here would be the data-loss the
-    // cascade fix removed, two files over).
-    if (s.done || isWarmupRow(s)) return s
+    if (isWarmupRow(s) || (s.done && !isWarmupRow(s))) return s
     const o = { ...s }
     if (p.weight != null) o.w = p.weight
     if (p.reps != null) o.r = p.reps
     if (p.sec != null) o.sec = p.sec
     return o
   })
-  // A policy that decided on a set count gets to grow the list — bodyweight progression adds
-  // a set where a barbell would have added a plate. Only ever upwards, and only by copying a
-  // row that is already there: a session in progress must not lose a set it has logged.
-  const workRows = out.filter(s => !isWarmupRow(s))
-  if (p.sets > workRows.length) {
-    // An all-warm-up entry has no work row to seed growth from - growing warm-up copies
-    // would both invent work and never terminate the loop. Leave the entry untouched.
-    if (!workRows.length) return out
-    const seed = workRows[workRows.length - 1]
+  // A policy that decided on a set count gets to grow the work rows, never the warm-up prefix.
+  const workCount = out.filter(s => !isWarmupRow(s)).length
+  if (p.sets > workCount && workCount > 0) {
+    const seed = out.filter(s => !isWarmupRow(s)).at(-1)
     while (out.filter(s => !isWarmupRow(s)).length < p.sets) out.push({ ...seed, done: false })
   }
   return out
