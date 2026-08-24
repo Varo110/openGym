@@ -1,18 +1,23 @@
 # openGym — standalone web server: serves the static app AND proxies /api to the backend,
 # so the whole app lives on ONE origin (required for WebAuthn / passkeys).
+resolver 127.0.0.11 valid=10s;
 server {
     listen ${NGINX_PORT};
     root /usr/share/nginx/html;
     index index.html;
 
-    # API → backend container
+    # API -> backend container (variable + resolver forces fresh DNS lookup per request,
+    # avoiding stale cached IPs when the backend redeploys and gets a new internal address)
     location /api/ {
-        proxy_pass http://${BACKEND}:${PORT};
+        set $backend_upstream ${BACKEND};
+        proxy_pass http://$backend_upstream:${PORT};
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 5s;
+        proxy_next_upstream error timeout http_502 http_503 http_504;
     }
 
     # SPA fallback
@@ -25,7 +30,7 @@ server {
         add_header Cache-Control "no-cache, must-revalidate";
     }
 
-    # Exercise images/GIFs never change → cache hard
+    # Exercise images/GIFs never change -> cache hard
     location ~* \.(png|jpg|jpeg|gif|ico|svg|woff|woff2|webp|avif)$ {
         expires 30d;
         add_header Cache-Control "public, max-age=2592000, immutable";
@@ -33,6 +38,4 @@ server {
 
     gzip on;
     gzip_types text/plain text/css application/json application/javascript image/svg+xml;
-    gzip_vary on;
-    gzip_min_length 1024;
 }
