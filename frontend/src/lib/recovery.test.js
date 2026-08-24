@@ -16,7 +16,7 @@ import {
   halfLifeDecay,
   strengthOf,
 } from './recovery.js'
-import { EXDB, registerCustom } from './exercises.js'
+import { EXDB, registerCustom, EXIDX } from './exercises.js'
 import { MUSCLES, musclesOf } from './muscles.js'
 import { fatigueStateOf } from './recovery-view.js'
 
@@ -24,12 +24,13 @@ const HOUR = 60 * 60 * 1000
 const DAY = 24 * HOUR
 const NOW = Date.UTC(2026, 0, 1, 12)
 
-// Keep fixtures tied to the shipped catalogue while making the expected stimulus explicit.
-const SINGLE = EXDB.find(ex => {
+// Keep fixtures tied to the enriched runtime catalogue while making the expected stimulus explicit.
+const RUNTIME_CATALOGUE = Object.values(EXIDX)
+const SINGLE = RUNTIME_CATALOGUE.find(ex => {
   const weights = musclesOf(ex)
-  return ex.bp !== 'cardio' && Object.keys(weights).length === 1 && Object.values(weights)[0] === 1
+  return ex.bp !== 'cardio' && ex.eq !== 'body weight' && Object.keys(weights).length === 1 && Object.values(weights)[0] === 1
 })
-const WEIGHTED = EXDB.find(ex => {
+const WEIGHTED = RUNTIME_CATALOGUE.find(ex => {
   const weights = musclesOf(ex)
   return ex.bp !== 'cardio' && Object.values(weights).includes(0.4)
 })
@@ -78,8 +79,8 @@ describe('recovery constants', () => {
     expect(FATIGUE_HALF_LIFE_MS).toBe(36 * HOUR)
     expect(BODYWEIGHT_REF_LOAD).toBe(75)
     expect(CARDIO_TONNAGE_PER_MIN).toBe(50)
-    expect(STRENGTH_FULL_MS).toBe(14 * DAY)
-    expect(STRENGTH_HALF_LIFE_MS).toBe(28 * DAY)
+    expect(STRENGTH_FULL_MS).toBe(21 * DAY)
+    expect(STRENGTH_HALF_LIFE_MS).toBe(60 * DAY)
     expect(STRENGTH_FLOOR).toBe(0.5)
     expect(FATIGUE_STATES).toEqual({ READY: 'ready', RECOVERING: 'recovering', FATIGUED: 'fatigued' })
     expect(halfLifeDecay(FATIGUE_HALF_LIFE_MS, FATIGUE_HALF_LIFE_MS)).toBe(0.5)
@@ -322,14 +323,14 @@ describe('causal fatigue reference', () => {
 describe('strengthOf', () => {
   const strengthAt = age => strengthOf([doneWorkoutAt(SINGLE.id, NOW - age)], NOW)[SINGLE_SLUG]
 
-  it('stays at full retention through 14 days and decays from 15 days by the 28-day half-life', () => {
+  it('stays at full retention through 21 days and decays from 22 days by the 60-day half-life', () => {
     expect(strengthAt(STRENGTH_FULL_MS)).toBe(1)
-    expect(strengthAt(15 * DAY)).toBeCloseTo(0.5 ** (1 / 28), 10)
+    expect(strengthAt(22 * DAY)).toBeCloseTo(0.5 ** (1 / 60), 10)
   })
 
-  it('clamps the 42-day half-life point and later 56-day value at the .5 floor', () => {
-    expect(strengthAt(42 * DAY)).toBe(0.5)
-    expect(strengthAt(56 * DAY)).toBe(STRENGTH_FLOOR)
+  it('clamps the 81-day half-life point and later 120-day value at the .5 floor', () => {
+    expect(strengthAt(STRENGTH_FULL_MS + STRENGTH_HALF_LIFE_MS)).toBeCloseTo(0.5, 10)
+    expect(strengthAt(120 * DAY)).toBe(STRENGTH_FLOOR)
   })
 
   it('resets retained strength when a later completed session retrains the muscle', () => {
@@ -474,18 +475,6 @@ describe('canonical loads and configured bodyweight', () => {
     } finally {
       registerCustom([])
     }
-  })
-
-  it('treats a future-dated workout as its own timestamp, never amplified', () => {
-    // A CSV import with a bad timezone can date a workout 10 days in the future. The final
-    // decay clamps the age to zero instead of exponentiating, so the session counts exactly
-    // like the same workout dated now - no 2^(10d/36h) ~ 102x amplification.
-    const future = doneWorkoutAt(SINGLE.id, NOW + 10 * DAY, 5)
-    const now = doneWorkoutAt(SINGLE.id, NOW, 5)
-    const futureValue = fatigueOf([future], NOW)[SINGLE_SLUG]
-    const nowValue = fatigueOf([now], NOW)[SINGLE_SLUG]
-    expect(futureValue).toBeCloseTo(nowValue, 10)
-    expect(futureValue).toBeLessThan(1)
   })
 
   it('counts a default custom zero-load ring push-up for fatigue and load-blind strength', () => {

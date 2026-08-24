@@ -3,6 +3,7 @@
    tool call without a restart. */
 import fs from 'node:fs'
 import path from 'node:path'
+import { migrateStateToKg } from '../../frontend/src/lib/units.js'
 
 const DATA_DIR = process.env.OPENGYM_DATA || path.join(process.cwd(), 'data')
 
@@ -15,6 +16,15 @@ let _loadedMtime = 0    // mtimeMs we last read at — used to catch watcher omi
 
 function readJsonOrNull(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return null }
+}
+
+// MCP is read-only, but it still has to apply the same persisted-state migration as the frontend.
+// Hydration never writes the file back: a later frontend/API write remains the authority for the
+// durable upgrade. Keeping this at the file boundary prevents each tool from guessing whether a
+// numeric field was legacy pounds or canonical kilograms.
+function hydrateState(raw) {
+  const canonical = migrateStateToKg(raw || {})
+  return Object.assign({}, defaultsShape(), canonical)
 }
 
 function reloadDb() { _db = readJsonOrNull(path.join(DATA_DIR, 'db.json')) || { users: [], creds: [], subs: [], invites: [] } }
@@ -62,7 +72,7 @@ export function init() {
   const file = stateFile(_uid)
   if (fs.existsSync(file)) {
     _state = readJsonOrNull(file)
-    if (_state) _state = Object.assign({}, defaultsShape(), _state)
+    if (_state) _state = hydrateState(_state)
     try { _loadedMtime = fs.statSync(file).mtimeMs } catch {}
   }
   if (_watcher) _watcher.close()
@@ -97,9 +107,7 @@ export function getState() {
   if (_state === undefined || mtime !== _loadedMtime) {
     const fresh = readJsonOrNull(file)
     if (fresh) {
-      // Same shape the frontend builds on pullState — defaults merged with stored state so any
-      // field the app added since the snapshot was last saved shows up undefined-safe.
-      _state = Object.assign({}, defaultsShape(), fresh)
+      _state = hydrateState(fresh)
       _loadedMtime = mtime
     } else if (_state === undefined) {
       _state = null  // no state file at all — never signed in on a device
@@ -121,6 +129,17 @@ export const dataDir = () => DATA_DIR
 export function _seedStateForTests(state) {
   _uid = 'test-uid'
   _db = { users: [{ id: _uid, name: 'Test', created: '2026-07-26T00:00:00.000Z' }], creds: [], subs: [], invites: [] }
+  if (state == null) {
+    _state = null
+    _loadedMtime = Number.MAX_SAFE_INTEGER
+    if (_watcher) { _watcher.close(); _watcher = null }
+    return
+  }
+  const hydrated = hydrateState(state)
+  // Preserve the caller's reference: existing tool tests intentionally mutate their fixture
+  // after seeding, so replacing it would make those mutations invisible to getState().
+  for (const key of Object.keys(state)) delete state[key]
+  Object.assign(state, hydrated)
   _state = state
   _loadedMtime = Number.MAX_SAFE_INTEGER   // never re-read from disk in a test
   if (_watcher) { _watcher.close(); _watcher = null }
